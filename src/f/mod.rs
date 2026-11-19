@@ -44,12 +44,15 @@ impl Frontend {
     pub fn run(&mut self) -> Result<()> {
         let tokens = lex(&self.source, &mut self.context);
         self.report_errors()?;
+        println!("\x1b[0;32mOutput tokens\x1b[0m");
+        dbg!(tokens);
         // do the stuff
         Ok(())
     }
 
     fn report_errors(&self) -> Result<()> {
         if self.context.has_error() {
+            eprintln!("\x1b[31mSome errors have occured!\x1b[0m");
             dbg!(&self.context.diags);
         }
 

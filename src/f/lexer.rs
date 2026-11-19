@@ -1,5 +1,7 @@
+use std::str;
+
 use crate::frontend::{
-    self, Ctx, Diagnostic, Frontend, Severity, Span, diagnostic::ErrorKind, span,
+    self, Ctx, Diagnostic, Frontend, Severity, Span, Sym, diagnostic::ErrorKind, span,
 };
 use anyhow::Result;
 
@@ -11,6 +13,7 @@ pub struct Token {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
+    Ident(Sym),
     Error,
     Eof,
     Fn,
@@ -71,12 +74,28 @@ impl Lexer<'_> {
 
         match b {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.consume_word(),
-            _ => self.illegal_char(start),
+            _ => self.illegal_char(),
         }
     }
 
     fn consume_word(&mut self) -> Token {
-        todo!()
+        let start = self.pos;
+        while matches!(self.peek(), Some(b) if b.is_ascii_alphanumeric() || b == b'_') {
+            self.pos += 1; // consume legal char
+        }
+        let end = self.pos;
+
+        let word = str::from_utf8(&self.src[start..end])
+            .expect("illegal charects will not be consumed, and cant be in this slice");
+        let kind = match word {
+            "fn" => TokenKind::Fn,
+            "include" => TokenKind::Include,
+            "intrinsic" => TokenKind::Intrinsic,
+            "let" => TokenKind::Let,
+            _ => TokenKind::Ident(self.ctx.interner.intern(word)),
+        };
+
+        self.token(kind, start)
     }
 
     fn add_error(&mut self, diagnostic: Diagnostic) -> Token {
@@ -86,7 +105,8 @@ impl Lexer<'_> {
         }
     }
 
-    fn illegal_char(&mut self, start: usize) -> Token {
+    fn illegal_char(&mut self) -> Token {
+        let start = self.pos;
         self.pos += 1;
         while matches!(self.peek(), Some(b) if is_continuation(b)) {
             self.pos += 1; // keep consuming non-ascii bytes
