@@ -11,15 +11,45 @@ pub struct Token {
     kind: TokenKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Ident(Sym),
-    Error,
-    Eof,
+
     Fn,
     Include,
     Intrinsic,
     Let,
+
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+
+    Comma,
+    Semi,
+    Colon,
+    ColonColon, // ::
+    Arrow,      // ->
+
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Eq,     // =
+    EqEq,   // ==
+    Bang,   // !
+    BangEq, // !=
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    Underscore,
+
+    Error,
+    Eof,
 }
 
 struct Lexer<'a> {
@@ -72,10 +102,32 @@ impl Lexer<'_> {
             return self.token(TokenKind::Eof, start);
         };
 
-        match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.consume_word(),
-            _ => self.illegal_char(),
-        }
+        let kind = match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => return self.consume_word(),
+
+            b'(' => self.single(TokenKind::LParen),
+            b')' => self.single(TokenKind::RParen),
+            b'{' => self.single(TokenKind::LBrace),
+            b'}' => self.single(TokenKind::RBrace),
+            b'[' => self.single(TokenKind::LBracket),
+            b']' => self.single(TokenKind::RBracket),
+            b',' => self.single(TokenKind::Comma),
+            b';' => self.single(TokenKind::Semi),
+            b'+' => self.single(TokenKind::Plus),
+            b'*' => self.single(TokenKind::Star),
+            b'%' => self.single(TokenKind::Percent),
+
+            b'=' => self.one_or_two(b'=', TokenKind::EqEq, TokenKind::Eq),
+            b'!' => self.one_or_two(b'=', TokenKind::BangEq, TokenKind::Bang),
+            b'<' => self.one_or_two(b'=', TokenKind::LtEq, TokenKind::Lt),
+            b'>' => self.one_or_two(b'=', TokenKind::GtEq, TokenKind::Gt),
+            b'-' => self.one_or_two(b'>', TokenKind::Arrow, TokenKind::Minus),
+            b':' => self.one_or_two(b':', TokenKind::ColonColon, TokenKind::Colon),
+
+            _ => return self.illegal_char(),
+        };
+
+        self.token(kind, start)
     }
 
     fn consume_word(&mut self) -> Token {
@@ -88,6 +140,7 @@ impl Lexer<'_> {
         let word = str::from_utf8(&self.src[start..end])
             .expect("illegal charects will not be consumed, and cant be in this slice");
         let kind = match word {
+            "_" => TokenKind::Underscore,
             "fn" => TokenKind::Fn,
             "include" => TokenKind::Include,
             "intrinsic" => TokenKind::Intrinsic,
@@ -126,6 +179,21 @@ impl Lexer<'_> {
         Token {
             span: span(start as u32, self.pos as u32),
             kind,
+        }
+    }
+
+    fn single(&mut self, kind: TokenKind) -> TokenKind {
+        self.pos += 1;
+        kind
+    }
+
+    fn one_or_two(&mut self, second: u8, two: TokenKind, one: TokenKind) -> TokenKind {
+        self.pos += 1;
+        if self.peek() == Some(second) {
+            self.pos += 1;
+            two
+        } else {
+            one
         }
     }
 }
