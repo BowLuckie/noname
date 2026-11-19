@@ -1,14 +1,14 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Ok, Result};
 use farm::frontend::Frontend;
 use std::path::Path;
 
-fn read_file(p: &str) -> Result<Box<str>> {
+fn read_file(p: &str) -> Result<String> {
     let path = Path::new(p);
     let root_path = &Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
     let s = std::fs::read_to_string(root_path)
         .with_context(|| format!("Failed to read file {}", root_path.display()))?;
 
-    Ok(s.into_boxed_str())
+    Ok(s)
 }
 
 fn main() -> Result<()> {

@@ -1,15 +1,35 @@
+use anyhow::Result;
 use std::path::Path;
 
-use anyhow::Result;
+mod ctx;
+mod diagnostic;
+mod interner;
+mod lexer;
+mod literals;
 
-use crate::frontend::lexer::lex;
-
-pub mod lexer;
+pub use ctx::Ctx;
+pub use diagnostic::{Diagnostic, Severity};
+pub use interner::{Interner, Sym};
+pub use lexer::{Token, TokenKind, lex};
+pub use literals::{Literals, StrId};
 
 #[derive(Default, Debug)]
 pub struct Frontend {
     source: Box<str>,
-    // internals to come
+    context: Ctx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    start: u32,
+    end: u32,
+}
+
+pub(crate) fn span(start: impl Into<u32>, end: impl Into<u32>) -> Span {
+    Span {
+        start: start.into(),
+        end: end.into(),
+    }
 }
 
 impl Frontend {
@@ -17,13 +37,22 @@ impl Frontend {
         Self::default()
     }
 
-    pub fn assign_source(&mut self, source: Box<str>) {
-        self.source = source
+    pub fn assign_source(&mut self, source: impl Into<String>) {
+        self.source = source.into().into_boxed_str()
     }
 
     pub fn run(&mut self) -> Result<()> {
-        lex(self);
+        let tokens = lex(&self.source, &mut self.context);
+        self.report_errors()?;
         // do the stuff
+        Ok(())
+    }
+
+    fn report_errors(&self) -> Result<()> {
+        if self.context.has_error() {
+            dbg!(&self.context.diags);
+        }
+
         Ok(())
     }
 }
