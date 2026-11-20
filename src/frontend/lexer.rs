@@ -1,9 +1,8 @@
-use std::str;
-
 use crate::frontend::{
     self, Ctx, Diagnostic, Frontend, Severity, Span, Sym, diagnostic::ErrorKind, span,
 };
 use anyhow::Result;
+use std::str;
 
 #[derive(Debug)]
 pub struct Token {
@@ -12,8 +11,32 @@ pub struct Token {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ISuffix {
+    U1,
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Usize,
+    Isize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FSuffix {
+    F16,
+    F32,
+    F64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Ident(Sym),
+    Int(u64, Option<ISuffix>),
+    Float(u64, Option<FSuffix>),
 
     Fn,
     Include,
@@ -52,12 +75,13 @@ pub enum TokenKind {
     Eof,
 }
 
-struct Lexer<'a> {
-    src: &'a [u8],
-    ctx: &'a mut Ctx,
+struct Lexer<'src> {
+    src: &'src [u8],
+    ctx: &'src mut Ctx,
     pos: usize,
 }
 
+/// Lexer entry point
 pub fn lex(source: &str, context: &mut Ctx) -> Vec<Token> {
     let mut lx = Lexer {
         src: source.as_bytes(),
@@ -124,6 +148,8 @@ impl Lexer<'_> {
             b'-' => self.one_or_two(b'>', TokenKind::Arrow, TokenKind::Minus),
             b':' => self.one_or_two(b':', TokenKind::ColonColon, TokenKind::Colon),
 
+            b'0'..=b'9' => return self.consume_number(),
+
             _ => return self.illegal_char(),
         };
 
@@ -132,9 +158,7 @@ impl Lexer<'_> {
 
     fn consume_word(&mut self) -> Token {
         let start = self.pos;
-        while matches!(self.peek(), Some(b) if b.is_ascii_alphanumeric() || b == b'_') {
-            self.pos += 1; // consume legal char
-        }
+        self.consume_while(is_ident_continue);
         let end = self.pos;
 
         let word = str::from_utf8(&self.src[start..end])
@@ -149,6 +173,19 @@ impl Lexer<'_> {
         };
 
         self.token(kind, start)
+    }
+
+    fn consume_number(&mut self) -> Token {
+        assert!(self.peek().unwrap().is_ascii_digit());
+
+        let start = self.pos;
+        self.consume_while(is_ident_continue);
+        let end = self.pos;
+
+        let number = str::from_utf8(&self.src[start..end])
+            .expect("illegal charects will not be consumed, and cant be in this slice");
+
+        todo!()
     }
 
     fn add_error(&mut self, diagnostic: Diagnostic) -> Token {
@@ -196,8 +233,18 @@ impl Lexer<'_> {
             one
         }
     }
+
+    fn consume_while(&mut self, pred: impl Fn(u8) -> bool) {
+        while matches!(self.peek(), Some(b) if pred(b)) {
+            self.pos += 1;
+        }
+    }
 }
 
 fn is_continuation(b: u8) -> bool {
     (b & 0b1100_0000) == 0b1000_0000
+}
+
+fn is_ident_continue(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }

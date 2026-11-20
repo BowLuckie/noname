@@ -1,6 +1,6 @@
 use anyhow::{Context, Ok, Result};
-use farm::frontend::Frontend;
 use std::path::Path;
+use uname::frontend::Frontend;
 
 fn read_file(p: &str) -> Result<String> {
     let path = Path::new(p);
@@ -13,7 +13,7 @@ fn read_file(p: &str) -> Result<String> {
 
 fn main() -> Result<()> {
     let mut frontend = Frontend::new();
-    let source = read_file("examples/main.farm")?;
+    let source = read_file("examples/main.un")?;
     frontend.assign_source(source);
 
     frontend.run()

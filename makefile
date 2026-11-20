@@ -1,4 +1,4 @@
-.PHONY: all run build clean
+.PHONY: all run build clean test
 .DEFAULT:  run
 
 all: run
@@ -11,3 +11,6 @@ build:
 
 clean:
 	cargo clean
+
+test:
+	cargo test
