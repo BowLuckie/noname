@@ -20,6 +20,9 @@ pub enum Severity {
 pub enum ErrorKind {
     IllegalChar,
     BadNumber,
+    UnterminatedComment,
+    BadTextLiteral,
+    BadEscape,
 }
 
 impl Diagnostic {

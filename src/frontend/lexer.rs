@@ -1,8 +1,10 @@
 use crate::frontend::{
-    self, Ctx, Diagnostic, Frontend, Severity, Span, Sym, diagnostic::ErrorKind, span, span_usize,
+    self, Ctx, Diagnostic, Frontend, Severity, Span, StrId, Sym, diagnostic::ErrorKind, span,
+    span_usize,
 };
 use anyhow::Result;
 use std::{
+    arch::asm,
     mem::transmute_copy,
     num::{IntErrorKind, ParseIntError},
     result, str,
@@ -36,6 +38,8 @@ pub enum TokenKind {
     Ident(Sym),
     Int(u64, Option<Suffix>),
     Float(u64, Option<Suffix>),
+    Str(StrId),
+    Char(u8),
 
     Fn,
     Include,
@@ -111,15 +115,49 @@ impl Lexer<'_> {
         self.src.get(self.pos + n).copied()
     }
 
-    fn skip_trivial(&mut self) {
-        while matches!(self.peek(), Some(b) if b.is_ascii_whitespace()) {
-            self.pos += 1;
+    fn skip_chars(&mut self) {
+        loop {
+            self.consume_while(|b| b.is_ascii_whitespace());
+            match (self.peek(), self.peek_at(1)) {
+                (Some(b'/'), Some(b'/')) => self.consume_while(|b| b != b'\n'),
+                (Some(b'/'), Some(b'*')) => self.block_comment(),
+                _ => break,
+            }
         }
-        // TODO: comments, probably just // syntax
+    }
+
+    fn block_comment(&mut self) {
+        let start = self.pos;
+        self.pos += 2;
+        let mut depth = 1;
+        while depth > 0 {
+            match (self.peek(), self.peek_at(1)) {
+                (Some(b'*'), Some(b'/')) => {
+                    self.pos += 2;
+                    depth -= 1;
+                }
+                (Some(b'/'), Some(b'*')) => {
+                    self.pos += 2;
+                    depth += 1;
+                }
+                (Some(_), _) => self.pos += 1,
+                (None, _) => {
+                    self.ctx.diags.push(
+                        Diagnostic::error(
+                            span_usize(start, self.pos),
+                            ErrorKind::UnterminatedComment,
+                            "unterminated block comment",
+                        )
+                        .with_label(span_usize(start, start + 2), "comment starts here"),
+                    );
+                    return;
+                }
+            }
+        }
     }
 
     fn next_token(&mut self) -> Token {
-        self.skip_trivial();
+        self.skip_chars();
         let start = self.pos;
 
         let Some(b) = self.peek() else {
@@ -129,6 +167,8 @@ impl Lexer<'_> {
         let kind = match b {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => return self.consume_word(),
             b'0'..=b'9' => return self.consume_number(),
+            b'\"' => return self.consume_string(),
+            b'\'' => return self.consume_byte_char(),
 
             b'(' => self.single(TokenKind::LParen),
             b')' => self.single(TokenKind::RParen),
@@ -142,6 +182,7 @@ impl Lexer<'_> {
             b'+' => self.single(TokenKind::Plus),
             b'*' => self.single(TokenKind::Star),
             b'%' => self.single(TokenKind::Percent),
+            b'/' => self.single(TokenKind::Slash),
 
             b'=' => self.one_or_two(b'=', TokenKind::EqEq, TokenKind::Eq),
             b'!' => self.one_or_two(b'=', TokenKind::BangEq, TokenKind::Bang),
@@ -173,6 +214,171 @@ impl Lexer<'_> {
         };
 
         self.token(kind, start)
+    }
+
+    fn consume_string(&mut self) -> Token {
+        debug_assert_eq!(self.peek(), Some(b'"'));
+        let start = self.pos;
+        self.pos += 1;
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut terminated = false;
+        let mut bad_escape = false;
+
+        while let Some(b) = self.peek() {
+            match b {
+                b'"' => {
+                    self.pos += 1;
+                    terminated = true;
+                    break;
+                }
+                b'\\' => {
+                    let esc_start = self.pos;
+                    self.pos += 1;
+                    if self.peek().is_none() {
+                        break;
+                    }
+                    match self.escape(esc_start) {
+                        Some(v) => buf.push(v),
+                        None => bad_escape = true,
+                    }
+                }
+                _ => {
+                    buf.push(b);
+                    self.pos += 1;
+                }
+            }
+        }
+
+        if !terminated {
+            self.ctx.diags.push(
+                Diagnostic::error(
+                    span_usize(start, self.pos),
+                    ErrorKind::BadTextLiteral,
+                    "unterminated string literal",
+                )
+                .with_label(span_usize(start, start + 1), "string starts here"),
+            );
+            return self.token(TokenKind::Error, start);
+        }
+        if bad_escape {
+            return self.token(TokenKind::Error, start);
+        }
+
+        let text = String::from_utf8(buf).expect("source is UTF-8 and escapes are ASCII");
+        let id = self.ctx.literals.intern_str(&text);
+        self.token(TokenKind::Str(id), start)
+    }
+
+    fn consume_byte_char(&mut self) -> Token {
+        debug_assert_eq!(self.peek(), Some(b'\''));
+        let start = self.pos;
+        self.pos += 1;
+
+        let unterminated = |this: &mut Self| {
+            this.ctx.diags.push(
+                Diagnostic::error(
+                    span_usize(start, this.pos),
+                    ErrorKind::BadTextLiteral,
+                    "unterminated byte literal",
+                )
+                .with_label(span_usize(start, start + 1), "literal starts here"),
+            );
+            this.token(TokenKind::Error, start)
+        };
+
+        let value: Option<u8> = match self.peek() {
+            None | Some(b'\n') => return unterminated(self),
+            Some(b'\'') => {
+                self.pos += 1;
+                self.text_error(start, "empty byte literal");
+                return self.token(TokenKind::Error, start);
+            }
+            Some(b'\\') => {
+                let esc_start = self.pos;
+                self.pos += 1;
+                if self.peek().is_none() {
+                    return unterminated(self);
+                }
+                self.escape(esc_start)
+            }
+            Some(b) if !b.is_ascii() => {
+                let ch_start = self.pos;
+                self.pos += 1;
+                while matches!(self.peek(), Some(b) if is_continuation(b)) {
+                    self.pos += 1;
+                }
+                self.text_error(ch_start, "byte literals must be ASCII");
+                None
+            }
+            Some(b) => {
+                self.pos += 1;
+                Some(b)
+            }
+        };
+
+        let mut errored = value.is_none();
+
+        if self.peek() == Some(b'\'') {
+            self.pos += 1;
+        } else {
+            let extra = self.pos;
+            self.consume_while(|b| b != b'\'' && b != b'\n');
+            if self.peek() == Some(b'\'') {
+                self.pos += 1;
+                if !errored {
+                    self.text_error(extra, "byte literal holds more than one byte");
+                }
+            } else if !errored {
+                return unterminated(self);
+            }
+            errored = true;
+        }
+
+        match value {
+            Some(v) if !errored => self.token(TokenKind::Char(v), start),
+            _ => self.token(TokenKind::Error, start),
+        }
+    }
+
+    fn bad_text_literal(&mut self, msg: impl Into<String>, start: usize) -> Token {
+        self.ctx.diags.push(Diagnostic::error(
+            span_usize(start, self.pos),
+            ErrorKind::BadTextLiteral,
+            msg.into(),
+        ));
+        self.token(TokenKind::Error, start)
+    }
+
+    fn escape(&mut self, esc_start: usize) -> Option<u8> {
+        let b = self.peek()?;
+        let val = match b {
+            b'n' => Some(b'\n'),
+            b't' => Some(b'\t'),
+            b'r' => Some(b'\r'),
+            b'0' => Some(0),
+            b'\\' => Some(b'\\'),
+            b'\'' => Some(b'\''),
+            b'"' => Some(b'"'),
+            _ => None,
+        };
+        self.pos += 1;
+        if val.is_none() {
+            while matches!(self.peek(), Some(b) if is_continuation(b)) {
+                self.pos += 1; // whole character, stay on a boundary
+            }
+            let text = String::from_utf8_lossy(&self.src[esc_start..self.pos]);
+            self.text_error(esc_start, format!("unknown escape sequence `{text}`"));
+        }
+        val
+    }
+
+    fn text_error(&mut self, start: usize, msg: impl Into<String>) {
+        self.ctx.diags.push(Diagnostic::error(
+            span_usize(start, self.pos),
+            ErrorKind::BadTextLiteral,
+            msg,
+        ));
     }
 
     fn consume_number(&mut self) -> Token {
@@ -286,7 +492,7 @@ impl Lexer<'_> {
         self.ctx.diags.push(Diagnostic::error(
             span(start as u32, self.pos as u32),
             ErrorKind::IllegalChar,
-            format!("IllegalChar: unexpected char `{text}`"),
+            format!("unexpected char `{text}`"),
         ));
 
         self.token(TokenKind::Error, start)
@@ -342,7 +548,7 @@ impl Lexer<'_> {
         self.ctx.diags.push(Diagnostic::error(
             span_usize(start, self.pos),
             ErrorKind::BadNumber,
-            format!("BadNumber: {}", msg.into()),
+            msg.into().to_string(),
         ));
 
         self.token(TokenKind::Error, start)

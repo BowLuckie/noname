@@ -12,22 +12,26 @@ pub struct StrId {
 }
 
 impl Literals {
-    pub fn intern_lit(&mut self, s: &str) -> StrId {
-        if let Some(&sym) = self.map.get(s) {
-            return sym;
+    pub fn intern_str(&mut self, s: &str) -> StrId {
+        if let Some(&str_id) = self.map.get(s) {
+            return str_id;
         }
 
-        let sym = StrId {
+        let str_id = StrId {
             inner: self.strs.len() as u32,
         };
 
         self.strs.push(s.into());
-        self.map.insert(s.into(), sym);
+        self.map.insert(s.into(), str_id);
 
-        sym
+        str_id
     }
 
-    pub fn resolve_lit(&self, sym: StrId) -> &str {
-        &self.strs[sym.inner as usize]
+    pub fn resolve_str(&self, str_id: StrId) -> &str {
+        &self.strs[str_id.inner as usize]
+    }
+
+    pub fn len(&self, id: StrId) -> usize {
+        self.strs[id.inner as usize].len()
     }
 }
