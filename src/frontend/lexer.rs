@@ -10,8 +10,8 @@ use std::{
 
 #[derive(Debug)]
 pub struct Token {
-    span: Span,
-    kind: TokenKind,
+    pub span: Span,
+    pub kind: TokenKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

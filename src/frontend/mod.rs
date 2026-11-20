@@ -10,7 +10,7 @@ mod literals;
 pub use ctx::Ctx;
 pub use diagnostic::{Diagnostic, Severity};
 pub use interner::{Interner, Sym};
-pub use lexer::{Token, TokenKind, lex};
+pub use lexer::{Suffix, Token, TokenKind, lex};
 pub use literals::{Literals, StrId};
 
 #[derive(Default, Debug)]
@@ -21,8 +21,8 @@ pub struct Frontend {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
-    start: u32,
-    end: u32,
+    pub start: u32,
+    pub end: u32,
 }
 
 pub(crate) fn span(start: impl Into<u32>, end: impl Into<u32>) -> Span {
