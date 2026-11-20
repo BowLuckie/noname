@@ -20,7 +20,6 @@ pub enum Severity {
 pub enum ErrorKind {
     IllegalChar,
     BadNumber,
-    InvalidSuffix,
 }
 
 impl Diagnostic {

@@ -3,6 +3,7 @@ use crate::frontend::{
 };
 use anyhow::Result;
 use std::{
+    mem::transmute_copy,
     num::{IntErrorKind, ParseIntError},
     result, str,
 };
@@ -192,12 +193,22 @@ impl Lexer<'_> {
         let digits_start = self.pos;
         self.consume_while(|b| number_legal(b, radix));
 
-        let float = radix == 10
+        let mut float = radix == 10
             && self.peek() == Some(b'.')
             && matches!(self.peek_at(1), Some(b) if b.is_ascii_digit());
         if float {
             self.pos += 1;
-            self.consume_while(|b| number_legal(b, 10));
+            self.consume_while(number_legal10);
+        }
+
+        dbg!(self.at_exponant());
+        if radix == 10 && self.at_exponant() {
+            float = true;
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            self.consume_while(number_legal10);
         }
 
         let digits_end = self.pos;
@@ -224,30 +235,24 @@ impl Lexer<'_> {
         let cleaned = digits.chars().filter(|&c| c != '_').collect::<String>();
 
         if cleaned.is_empty() {
-            return self.bad_number(
-                start,
-                &format!("Missing digits after base-{} prefix", radix).to_string(),
-            );
+            return self.bad_number(start, format!("Missing digits after base-{} prefix", radix));
         }
 
         let suffix = Lexer::parse_suffix(suffix_s);
         if suffix.is_none() && !suffix_s.is_empty() {
-            self.ctx.diags.push(
-                Diagnostic::error(
-                    span_usize(start, end),
-                    ErrorKind::InvalidSuffix,
-                    format!(
-                        "InvalidSuffix: unknown or invalid literal suffix {}",
-                        suffix_s
-                    ),
-                )
-                .with_note("Try a primitive number type like u1, i16, or f32"),
+            self.bad_number(
+                start,
+                format!("unknown or invalid literal suffix {}", suffix_s),
             );
+
             return self.token(TokenKind::Error, start);
         }
 
         if float {
             let n = match cleaned.parse::<f64>() {
+                Ok(n) if n.is_infinite() => {
+                    return self.bad_number(start, "float literal out of range");
+                }
                 Ok(n) => n,
                 Err(_) => return self.bad_number(start, "invalid float literal"),
             };
@@ -258,9 +263,9 @@ impl Lexer<'_> {
                 Ok(n) => n,
                 Err(e) => {
                     let msg = if let IntErrorKind::PosOverflow = e.kind() {
-                        "BadNumber: int literal too large"
+                        "int literal too large"
                     } else {
-                        &format!("BadNumber: invalid int literal {}", cleaned).to_string()
+                        &format!("invalid int literal {}", cleaned).to_string()
                     };
                     return self.bad_number(start, msg);
                 }
@@ -333,18 +338,18 @@ impl Lexer<'_> {
         })
     }
 
-    fn bad_number(&mut self, start: usize, msg: &str) -> Token {
+    fn bad_number(&mut self, start: usize, msg: impl Into<String>) -> Token {
         self.ctx.diags.push(Diagnostic::error(
             span_usize(start, self.pos),
             ErrorKind::BadNumber,
-            format!("BadNumber: {}", msg),
+            format!("BadNumber: {}", msg.into()),
         ));
 
         self.token(TokenKind::Error, start)
     }
 
     fn at_exponant(&self) -> bool {
-        if matches!(self.peek(), Some(b'e' | b'E')) {
+        if !matches!(self.peek(), Some(b'e' | b'E')) {
             return false;
         }
         match self.peek_at(1) {
@@ -365,4 +370,8 @@ fn ident_legal(b: u8) -> bool {
 
 fn number_legal(b: u8, radix: u32) -> bool {
     b == b'_' || (b as char).is_digit(radix)
+}
+
+fn number_legal10(b: u8) -> bool {
+    number_legal(b, 10)
 }
