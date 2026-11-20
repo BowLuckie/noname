@@ -4,6 +4,7 @@ use crate::frontend::Span;
 pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
+    pub kind: ErrorKind,
     pub span: Span,
     pub labels: Vec<(Span, String)>,
     pub notes: Vec<String>,
@@ -18,12 +19,15 @@ pub enum Severity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     IllegalChar,
+    BadNumber,
+    InvalidSuffix,
 }
 
 impl Diagnostic {
     pub fn error(span: Span, error_kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
+            kind: error_kind,
             message: message.into(),
             span,
             labels: Vec::new(),

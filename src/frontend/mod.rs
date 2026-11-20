@@ -32,6 +32,13 @@ pub(crate) fn span(start: impl Into<u32>, end: impl Into<u32>) -> Span {
     }
 }
 
+pub(crate) fn span_usize(start: usize, end: usize) -> Span {
+    Span {
+        start: start as u32,
+        end: end as u32,
+    }
+}
+
 impl Frontend {
     pub fn new() -> Self {
         Self::default()
@@ -42,11 +49,17 @@ impl Frontend {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        // do the stuff
         let tokens = lex(&self.source, &mut self.context);
         self.report_errors()?;
         println!("\x1b[0;32mOutput tokens\x1b[0m");
         dbg!(tokens);
-        // do the stuff
+        if self.context.has_error() {
+            println!("\nfrontend finished with error(s)");
+            for (ekind, msg) in self.context.diags.iter().map(|d| (d.kind, &d.message)) {
+                println!("\x1b[31m{}\x1b[0m", msg);
+            }
+        }
         Ok(())
     }
 

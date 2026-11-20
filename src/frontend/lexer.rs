@@ -1,8 +1,11 @@
 use crate::frontend::{
-    self, Ctx, Diagnostic, Frontend, Severity, Span, Sym, diagnostic::ErrorKind, span,
+    self, Ctx, Diagnostic, Frontend, Severity, Span, Sym, diagnostic::ErrorKind, span, span_usize,
 };
 use anyhow::Result;
-use std::str;
+use std::{
+    num::{IntErrorKind, ParseIntError},
+    result, str,
+};
 
 #[derive(Debug)]
 pub struct Token {
@@ -11,23 +14,18 @@ pub struct Token {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ISuffix {
+pub enum Suffix {
     U1,
     U8,
     U16,
     U32,
     U64,
+    Usize,
     I8,
     I16,
     I32,
     I64,
-    Usize,
     Isize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FSuffix {
-    F16,
     F32,
     F64,
 }
@@ -35,8 +33,8 @@ pub enum FSuffix {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Ident(Sym),
-    Int(u64, Option<ISuffix>),
-    Float(u64, Option<FSuffix>),
+    Int(u64, Option<Suffix>),
+    Float(u64, Option<Suffix>),
 
     Fn,
     Include,
@@ -51,6 +49,7 @@ pub enum TokenKind {
     RBracket,
 
     Comma,
+    Dot,
     Semi,
     Colon,
     ColonColon, // ::
@@ -128,6 +127,7 @@ impl Lexer<'_> {
 
         let kind = match b {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => return self.consume_word(),
+            b'0'..=b'9' => return self.consume_number(),
 
             b'(' => self.single(TokenKind::LParen),
             b')' => self.single(TokenKind::RParen),
@@ -136,6 +136,7 @@ impl Lexer<'_> {
             b'[' => self.single(TokenKind::LBracket),
             b']' => self.single(TokenKind::RBracket),
             b',' => self.single(TokenKind::Comma),
+            b'.' => self.single(TokenKind::Dot),
             b';' => self.single(TokenKind::Semi),
             b'+' => self.single(TokenKind::Plus),
             b'*' => self.single(TokenKind::Star),
@@ -148,8 +149,6 @@ impl Lexer<'_> {
             b'-' => self.one_or_two(b'>', TokenKind::Arrow, TokenKind::Minus),
             b':' => self.one_or_two(b':', TokenKind::ColonColon, TokenKind::Colon),
 
-            b'0'..=b'9' => return self.consume_number(),
-
             _ => return self.illegal_char(),
         };
 
@@ -158,11 +157,11 @@ impl Lexer<'_> {
 
     fn consume_word(&mut self) -> Token {
         let start = self.pos;
-        self.consume_while(is_ident_continue);
+        self.consume_while(ident_legal);
         let end = self.pos;
 
         let word = str::from_utf8(&self.src[start..end])
-            .expect("illegal charects will not be consumed, and cant be in this slice");
+            .expect("illegal characters will not be consumed, and cant be in this slice");
         let kind = match word {
             "_" => TokenKind::Underscore,
             "fn" => TokenKind::Fn,
@@ -176,22 +175,98 @@ impl Lexer<'_> {
     }
 
     fn consume_number(&mut self) -> Token {
-        assert!(self.peek().unwrap().is_ascii_digit());
-
+        debug_assert!(self.peek().unwrap().is_ascii_digit());
         let start = self.pos;
-        self.consume_while(is_ident_continue);
-        let end = self.pos;
 
-        let number = str::from_utf8(&self.src[start..end])
-            .expect("illegal charects will not be consumed, and cant be in this slice");
+        let radix = match (self.peek(), self.peek_at(1)) {
+            (Some(b'0'), Some(b'x')) => 16,
+            (Some(b'0'), Some(b'b')) => 2,
+            (Some(b'0'), Some(b'o')) => 8,
+            _ => 10,
+        };
 
-        todo!()
-    }
+        if radix != 10 {
+            self.pos += 2;
+        }
 
-    fn add_error(&mut self, diagnostic: Diagnostic) -> Token {
-        Token {
-            span: span(self.pos as u32, self.pos as u32 + 1),
-            kind: TokenKind::Error,
+        let digits_start = self.pos;
+        self.consume_while(|b| number_legal(b, radix));
+
+        let float = radix == 10
+            && self.peek() == Some(b'.')
+            && matches!(self.peek_at(1), Some(b) if b.is_ascii_digit());
+        if float {
+            self.pos += 1;
+            self.consume_while(|b| number_legal(b, 10));
+        }
+
+        let digits_end = self.pos;
+
+        if let Some(b) = self.peek()
+            && b.is_ascii_digit()
+        {
+            let msg =
+                &format!("invalid digit `{}` in base-{} literal", b as char, radix).to_string();
+            self.consume_while(ident_legal);
+            return self.bad_number(start, msg);
+        }
+
+        let suffix_start = self.pos;
+        self.consume_while(ident_legal);
+        let suffix_end = self.pos;
+        let end = suffix_end;
+
+        let digits = str::from_utf8(&self.src[digits_start..digits_end])
+            .expect("illegal characters will not be consumed");
+        let suffix_s = str::from_utf8(&self.src[suffix_start..suffix_end])
+            .expect("illegal characters will not be consumed");
+
+        let cleaned = digits.chars().filter(|&c| c != '_').collect::<String>();
+
+        if cleaned.is_empty() {
+            return self.bad_number(
+                start,
+                &format!("Missing digits after base-{} prefix", radix).to_string(),
+            );
+        }
+
+        let suffix = Lexer::parse_suffix(suffix_s);
+        if suffix.is_none() && !suffix_s.is_empty() {
+            self.ctx.diags.push(
+                Diagnostic::error(
+                    span_usize(start, end),
+                    ErrorKind::InvalidSuffix,
+                    format!(
+                        "InvalidSuffix: unknown or invalid literal suffix {}",
+                        suffix_s
+                    ),
+                )
+                .with_note("Try a primitive number type like u1, i16, or f32"),
+            );
+            return self.token(TokenKind::Error, start);
+        }
+
+        if float {
+            let n = match cleaned.parse::<f64>() {
+                Ok(n) => n,
+                Err(_) => return self.bad_number(start, "invalid float literal"),
+            };
+
+            self.token(TokenKind::Float(n.to_bits(), suffix), start)
+        } else {
+            let n = match u64::from_str_radix(&cleaned, radix) {
+                Ok(n) => n,
+                Err(e) => {
+                    let msg = if let IntErrorKind::PosOverflow = e.kind() {
+                        "BadNumber: int literal too large"
+                    } else {
+                        &format!("BadNumber: invalid int literal {}", cleaned).to_string()
+                    };
+                    return self.bad_number(start, msg);
+                }
+            };
+
+            self.token(TokenKind::Int(n, suffix), start)
         }
     }
 
@@ -239,12 +314,55 @@ impl Lexer<'_> {
             self.pos += 1;
         }
     }
+
+    fn parse_suffix(s: &str) -> Option<Suffix> {
+        Some(match s {
+            "u8" => Suffix::U8,
+            "u16" => Suffix::U16,
+            "u32" => Suffix::U32,
+            "u64" => Suffix::U64,
+            "usize" => Suffix::Usize,
+            "i8" => Suffix::I8,
+            "i16" => Suffix::I16,
+            "i32" => Suffix::I32,
+            "i64" => Suffix::I64,
+            "isize" => Suffix::Isize,
+            "f32" => Suffix::F32,
+            "f64" => Suffix::F64,
+            _ => return None,
+        })
+    }
+
+    fn bad_number(&mut self, start: usize, msg: &str) -> Token {
+        self.ctx.diags.push(Diagnostic::error(
+            span_usize(start, self.pos),
+            ErrorKind::BadNumber,
+            format!("BadNumber: {}", msg),
+        ));
+
+        self.token(TokenKind::Error, start)
+    }
+
+    fn at_exponant(&self) -> bool {
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            return false;
+        }
+        match self.peek_at(1) {
+            Some(b) if b.is_ascii_digit() => true,
+            Some(b'+' | b'-') => matches!(self.peek_at(2), Some(b) if b.is_ascii_digit()),
+            _ => false,
+        }
+    }
 }
 
 fn is_continuation(b: u8) -> bool {
     (b & 0b1100_0000) == 0b1000_0000
 }
 
-fn is_ident_continue(b: u8) -> bool {
+fn ident_legal(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn number_legal(b: u8, radix: u32) -> bool {
+    b == b'_' || (b as char).is_digit(radix)
 }
