@@ -1,9 +1,10 @@
 use crate::frontend::{
-    Ctx, Diagnostic, FileId, SourceMap, Span, StrId, Sym, diagnostic::ErrorKind,
+    Ctx, Diagnostic, FileId, Frontend, SourceMap, Span, StrId, Sym, diagnostic::ErrorKind,
 };
 use anyhow::Result;
 use std::{
     arch::asm,
+    fmt::{self, Display, Formatter},
     mem::transmute_copy,
     num::{IntErrorKind, ParseIntError},
     result, str,
@@ -85,27 +86,29 @@ pub enum TokenKind {
     Eof,
 }
 
-/// Lexer entry point
-pub fn lex(sources: &SourceMap, file: FileId, ctx: &mut Ctx) -> Vec<Token> {
-    let f = sources.file(file);
-    let mut lx = Lexer {
-        src: f.text.as_bytes(),
-        pos: 0,
-        ctx,
-        base: f.base,
-    };
+impl Frontend {
+    /// Lexer entry point
+    pub fn lex(sources: &SourceMap, file: FileId, ctx: &mut Ctx) -> Vec<Token> {
+        let f = sources.file(file);
+        let mut lx = Lexer {
+            src: f.text.as_bytes(),
+            pos: 0,
+            ctx,
+            base: f.base,
+        };
 
-    let mut tokens = Vec::new();
-    loop {
-        let tok = lx.next_token();
-        let done = tok.kind == TokenKind::Eof;
-        tokens.push(tok);
-        if done {
-            break;
+        let mut tokens = Vec::new();
+        loop {
+            let tok = lx.next_token();
+            let done = tok.kind == TokenKind::Eof;
+            tokens.push(tok);
+            if done {
+                break;
+            }
         }
-    }
 
-    tokens
+        tokens
+    }
 }
 
 impl Lexer<'_> {
@@ -419,7 +422,6 @@ impl Lexer<'_> {
             self.consume_while(number_legal10);
         }
 
-        dbg!(self.at_exponant());
         if radix == 10 && self.at_exponant() {
             float = true;
             self.pos += 1;
@@ -596,4 +598,10 @@ fn number_legal(b: u8, radix: u32) -> bool {
 
 fn number_legal10(b: u8) -> bool {
     number_legal(b, 10)
+}
+
+impl Display for Token {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.kind)
+    }
 }

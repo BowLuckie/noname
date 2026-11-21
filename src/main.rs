@@ -8,7 +8,7 @@ fn main() -> Result<()> {
     frontend.set_root(path);
 
     if let Err(e) = frontend.run() {
-        eprint!("{}", frontend.render_diagnostics());
+        eprint!("{}", frontend.render_diagnostics(true));
         return Err(e);
     }
     Ok(())

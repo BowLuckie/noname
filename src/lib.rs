@@ -6,3 +6,4 @@ use std::path::Path;
 pub(crate) type Btye = u8;
 
 pub mod frontend;
+pub mod utils;

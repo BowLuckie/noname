@@ -65,6 +65,19 @@ impl SourceMap {
     pub fn file(&self, id: FileId) -> &SourceFile {
         &self.files[id.inner as usize]
     }
+
+    pub fn lookup(&self, global: u32) -> (&SourceFile, u32) {
+        // last element of the first partition
+        let i = self.files.partition_point(|f| f.base <= global) - 1;
+        let file = &self.files[i];
+        (file, global - file.base)
+    }
+
+    pub fn locate(&self, span: Span) -> (&SourceFile, usize, usize) {
+        let (file, local) = self.lookup(span.start());
+        let (line, col) = file.line_col(local);
+        (file, line, col)
+    }
 }
 
 impl SourceFile {

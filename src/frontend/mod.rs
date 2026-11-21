@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::fmt::Write;
 use std::{
     collections::HashSet,
     fs, io,
@@ -15,11 +16,11 @@ mod source;
 pub use ctx::Ctx;
 pub use diagnostic::{Diagnostic, Severity};
 pub use interner::{Interner, Sym};
-pub use lexer::{Suffix, Token, TokenKind, lex};
+pub use lexer::{Suffix, Token, TokenKind};
 pub use literals::{Literals, StrId};
 pub use source::*;
 
-use crate::frontend::diagnostic::CompileFailed;
+use crate::{frontend::diagnostic::CompileFailed, utils::Color};
 
 pub type SourceLoaderFn = Box<dyn Fn(&Path) -> io::Result<String>>;
 
@@ -48,10 +49,10 @@ impl Frontend {
             .with_context(|| format!("falied to read {}", root.display()))?;
 
         let id = self.sources.add(root, text);
-        let tokens = lex(&self.sources, id, &mut self.ctx);
+        let tokens = Frontend::lex(&self.sources, id, &mut self.ctx);
 
         println!("\x1b[0;32mOutput tokens\x1b[0m");
-        dbg!(tokens);
+        tokens.iter().for_each(|f| println!("{f}"));
         if self.ctx.has_error() {
             return Err(CompileFailed {
                 errors: self.ctx.error_count(),
@@ -74,8 +75,13 @@ impl Frontend {
         }
     }
 
-    pub fn render_diagnostics(&self) -> String {
-        todo!("render diagnostics")
+    pub fn render_diagnostics(&self, color: bool) -> String {
+        let mut out = String::new();
+        for d in &self.ctx.diags {
+            let _ = writeln!(out, "{}", d.render(&self.sources, color));
+        }
+
+        out
     }
 }
 
