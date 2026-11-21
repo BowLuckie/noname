@@ -1,74 +1,86 @@
-use anyhow::Result;
-use std::path::Path;
+use anyhow::{Context, Result};
+use std::{
+    collections::HashSet,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 mod ctx;
 mod diagnostic;
 mod interner;
 mod lexer;
 mod literals;
+mod source;
 
 pub use ctx::Ctx;
 pub use diagnostic::{Diagnostic, Severity};
 pub use interner::{Interner, Sym};
 pub use lexer::{Suffix, Token, TokenKind, lex};
 pub use literals::{Literals, StrId};
+pub use source::*;
 
-#[derive(Default, Debug)]
+use crate::frontend::diagnostic::CompileFailed;
+
+pub type SourceLoaderFn = Box<dyn Fn(&Path) -> io::Result<String>>;
+
 pub struct Frontend {
-    source: Box<str>,
-    context: Ctx,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub start: u32,
-    pub end: u32,
-}
-
-pub(crate) fn span(start: impl Into<u32>, end: impl Into<u32>) -> Span {
-    Span {
-        start: start.into(),
-        end: end.into(),
-    }
-}
-
-pub(crate) fn span_usize(start: usize, end: usize) -> Span {
-    Span {
-        start: start as u32,
-        end: end as u32,
-    }
+    sources: SourceMap,
+    ctx: Ctx,
+    root: Option<PathBuf>,
+    loader: SourceLoaderFn,
 }
 
 impl Frontend {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_loader(|p| fs::read_to_string(p))
     }
 
-    pub fn assign_source(&mut self, source: impl Into<String>) {
-        self.source = source.into().into_boxed_str()
+    pub fn add_file(&mut self, name: impl Into<PathBuf>, text: impl Into<String>) -> FileId {
+        self.sources.add(name.into(), text.into())
     }
 
     pub fn run(&mut self) -> Result<()> {
-        // do the stuff
-        let tokens = lex(&self.source, &mut self.context);
-        self.report_errors()?;
+        // TODO: when parsing, collect all the includes and queue those files for lexing and parsing
+        // avoiding cyclic imports
+
+        let root = self.root.clone().context("no root loaded")?;
+        let text = (self.loader)(root.as_path())
+            .with_context(|| format!("falied to read {}", root.display()))?;
+
+        let id = self.sources.add(root, text);
+        let tokens = lex(&self.sources, id, &mut self.ctx);
+
         println!("\x1b[0;32mOutput tokens\x1b[0m");
         dbg!(tokens);
-        if self.context.has_error() {
-            println!("\nfrontend finished with error(s)");
-            for (ekind, msg) in self.context.diags.iter().map(|d| (d.kind, &d.message)) {
-                println!("\x1b[31m{}\x1b[0m", msg);
+        if self.ctx.has_error() {
+            return Err(CompileFailed {
+                errors: self.ctx.error_count(),
             }
+            .into());
         }
         Ok(())
     }
 
-    fn report_errors(&self) -> Result<()> {
-        if self.context.has_error() {
-            eprintln!("\x1b[31mSome errors have occured!\x1b[0m");
-            dbg!(&self.context.diags);
-        }
+    pub fn set_root(&mut self, path: String) {
+        self.root = Some(path.into());
+    }
 
-        Ok(())
+    fn with_loader(loader: impl Fn(&Path) -> io::Result<String> + 'static) -> Frontend {
+        Frontend {
+            loader: Box::new(loader),
+            sources: Default::default(),
+            ctx: Default::default(),
+            root: Default::default(),
+        }
+    }
+
+    pub fn render_diagnostics(&self) -> String {
+        todo!("render diagnostics")
+    }
+}
+
+impl Default for Frontend {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -1,10 +1,13 @@
+use core::fmt;
+use std::error;
+
 use crate::frontend::Span;
 
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub severity: Severity,
-    pub message: String,
     pub kind: ErrorKind,
+    pub message: String,
     pub span: Span,
     pub labels: Vec<(Span, String)>,
     pub notes: Vec<String>,
@@ -24,6 +27,22 @@ pub enum ErrorKind {
     BadTextLiteral,
     BadEscape,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompileFailed {
+    pub errors: usize,
+}
+
+impl fmt::Display for CompileFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.errors {
+            1 => write!(f, "aborting due to 1 error"),
+            n => write!(f, "aborting due to {n} errors"),
+        }
+    }
+}
+
+impl error::Error for CompileFailed {}
 
 impl Diagnostic {
     pub fn error(span: Span, error_kind: ErrorKind, message: impl Into<String>) -> Self {

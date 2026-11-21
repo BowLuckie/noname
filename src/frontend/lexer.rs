@@ -1,6 +1,5 @@
 use crate::frontend::{
-    self, Ctx, Diagnostic, Frontend, Severity, Span, StrId, Sym, diagnostic::ErrorKind, span,
-    span_usize,
+    Ctx, Diagnostic, FileId, SourceMap, Span, StrId, Sym, diagnostic::ErrorKind,
 };
 use anyhow::Result;
 use std::{
@@ -10,10 +9,17 @@ use std::{
     result, str,
 };
 
+struct Lexer<'src> {
+    src: &'src [u8],
+    ctx: &'src mut Ctx,
+    base: u32,
+    pos: usize,
+}
+
 #[derive(Debug)]
 pub struct Token {
-    pub span: Span,
     pub kind: TokenKind,
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,18 +85,14 @@ pub enum TokenKind {
     Eof,
 }
 
-struct Lexer<'src> {
-    src: &'src [u8],
-    ctx: &'src mut Ctx,
-    pos: usize,
-}
-
 /// Lexer entry point
-pub fn lex(source: &str, context: &mut Ctx) -> Vec<Token> {
+pub fn lex(sources: &SourceMap, file: FileId, ctx: &mut Ctx) -> Vec<Token> {
+    let f = sources.file(file);
     let mut lx = Lexer {
-        src: source.as_bytes(),
+        src: f.text.as_bytes(),
         pos: 0,
-        ctx: context,
+        ctx,
+        base: f.base,
     };
 
     let mut tokens = Vec::new();
@@ -144,11 +146,11 @@ impl Lexer<'_> {
                 (None, _) => {
                     self.ctx.diags.push(
                         Diagnostic::error(
-                            span_usize(start, self.pos),
+                            self.span(start, self.pos),
                             ErrorKind::UnterminatedComment,
                             "unterminated block comment",
                         )
-                        .with_label(span_usize(start, start + 2), "comment starts here"),
+                        .with_label(self.span(start, start + 2), "comment starts here"),
                     );
                     return;
                 }
@@ -253,11 +255,11 @@ impl Lexer<'_> {
         if !terminated {
             self.ctx.diags.push(
                 Diagnostic::error(
-                    span_usize(start, self.pos),
+                    self.span(start, self.pos),
                     ErrorKind::BadTextLiteral,
                     "unterminated string literal",
                 )
-                .with_label(span_usize(start, start + 1), "string starts here"),
+                .with_label(self.span(start, start + 1), "string starts here"),
             );
             return self.token(TokenKind::Error, start);
         }
@@ -278,17 +280,17 @@ impl Lexer<'_> {
         let unterminated = |this: &mut Self| {
             this.ctx.diags.push(
                 Diagnostic::error(
-                    span_usize(start, this.pos),
+                    Lexer::span(self, start, this.pos),
                     ErrorKind::BadTextLiteral,
                     "unterminated byte literal",
                 )
-                .with_label(span_usize(start, start + 1), "literal starts here"),
+                .with_label(self.span(start, start + 1), "literal starts here"),
             );
             this.token(TokenKind::Error, start)
         };
 
         let value: Option<u8> = match self.peek() {
-            None | Some(b'\n') => return unterminated(self),
+            None | Some(b'\n') => return self.unterminated_byte_literal(start),
             Some(b'\'') => {
                 self.pos += 1;
                 self.text_error(start, "empty byte literal");
@@ -298,7 +300,7 @@ impl Lexer<'_> {
                 let esc_start = self.pos;
                 self.pos += 1;
                 if self.peek().is_none() {
-                    return unterminated(self);
+                    return self.unterminated_byte_literal(start);
                 }
                 self.escape(esc_start)
             }
@@ -330,7 +332,7 @@ impl Lexer<'_> {
                     self.text_error(extra, "byte literal holds more than one byte");
                 }
             } else if !errored {
-                return unterminated(self);
+                return self.unterminated_byte_literal(start);
             }
             errored = true;
         }
@@ -341,9 +343,19 @@ impl Lexer<'_> {
         }
     }
 
+    fn unterminated_byte_literal(&mut self, start: usize) -> Token {
+        let span = self.span(start, self.pos);
+        let label = self.span(start, start + 1);
+        self.ctx.diags.push(
+            Diagnostic::error(span, ErrorKind::BadTextLiteral, "unterminated byte literal")
+                .with_label(label, "literal starts here"),
+        );
+        self.token(TokenKind::Error, start)
+    }
+
     fn bad_text_literal(&mut self, msg: impl Into<String>, start: usize) -> Token {
         self.ctx.diags.push(Diagnostic::error(
-            span_usize(start, self.pos),
+            self.span(start, self.pos),
             ErrorKind::BadTextLiteral,
             msg.into(),
         ));
@@ -375,7 +387,7 @@ impl Lexer<'_> {
 
     fn text_error(&mut self, start: usize, msg: impl Into<String>) {
         self.ctx.diags.push(Diagnostic::error(
-            span_usize(start, self.pos),
+            self.span(start, self.pos),
             ErrorKind::BadTextLiteral,
             msg,
         ));
@@ -490,7 +502,7 @@ impl Lexer<'_> {
 
         let text: String = String::from_utf8_lossy(&self.src[start..self.pos]).into();
         self.ctx.diags.push(Diagnostic::error(
-            span(start as u32, self.pos as u32),
+            self.span(start, self.pos),
             ErrorKind::IllegalChar,
             format!("unexpected char `{text}`"),
         ));
@@ -498,9 +510,13 @@ impl Lexer<'_> {
         self.token(TokenKind::Error, start)
     }
 
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span::new(self.base + start as u32, self.base + end as u32)
+    }
+
     fn token(&self, kind: TokenKind, start: usize) -> Token {
         Token {
-            span: span(start as u32, self.pos as u32),
+            span: self.span(start, self.pos),
             kind,
         }
     }
@@ -546,7 +562,7 @@ impl Lexer<'_> {
 
     fn bad_number(&mut self, start: usize, msg: impl Into<String>) -> Token {
         self.ctx.diags.push(Diagnostic::error(
-            span_usize(start, self.pos),
+            self.span(start, self.pos),
             ErrorKind::BadNumber,
             msg.into().to_string(),
         ));

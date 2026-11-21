@@ -19,4 +19,11 @@ impl Ctx {
 
         false
     }
+
+    pub fn error_count(&self) -> usize {
+        self.diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .count()
+    }
 }

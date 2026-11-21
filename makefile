@@ -4,7 +4,7 @@
 all: run
 
 run:
-	cargo run
+	cargo run -- ./examples/main.un
 
 build:
 	cargo build
