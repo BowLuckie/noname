@@ -15,7 +15,7 @@ pub struct Diagnostic {
     pub notes: Vec<String>,
 }
 
-pub struct Rendered<'a> {
+pub struct DiagnosticRenderer<'a> {
     diag: &'a Diagnostic,
     sources: &'a SourceMap,
     color: bool,
@@ -83,15 +83,15 @@ impl Diagnostic {
         self
     }
 
-    pub fn render<'a>(&'a self, sources: &'a SourceMap, color: bool) -> Rendered<'a> {
-        Rendered {
+    pub fn render<'a>(&'a self, sources: &'a SourceMap, color: bool) -> DiagnosticRenderer<'a> {
+        DiagnosticRenderer {
             diag: self,
             sources,
             color,
         }
     }
 }
-impl Rendered<'_> {
+impl DiagnosticRenderer<'_> {
     fn format_span(&self, f: &mut impl fmt::Write, span: Span, hl: &str) -> fmt::Result {
         let (file, start_line, start_col) = self.sources.locate(span);
         let text = file.line_text(start_line);
@@ -142,7 +142,7 @@ impl Rendered<'_> {
     }
 }
 
-impl Display for Rendered<'_> {
+impl Display for DiagnosticRenderer<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let d = self.diag;
 
@@ -168,7 +168,6 @@ impl Display for Rendered<'_> {
         for label in &d.labels {
             self.format_label(f, label)?;
         }
-
 
         for note in &d.notes {
             writeln!(f, "{note_hl}- note{reset}: {note}")?;

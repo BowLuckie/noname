@@ -16,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::frontend::lexer::TokenRenderer;
 use crate::{CompilerOptions, utils::Color};
 
 pub type SourceLoaderFn = Box<dyn Fn(&Path) -> io::Result<String>>;
@@ -69,9 +70,11 @@ impl Frontend {
                 Default::default()
             };
             writeln!(self.out, "{hl}Output tokens{reset}")?;
-            for t in &tokens {
-                writeln!(self.out, "{t}")?;
-            }
+            writeln!(
+                self.out,
+                "{}",
+                TokenRenderer::new(&tokens, &self.sources, &self.ctx, opts.color)
+            )?;
         }
 
         if self.ctx.has_error() {

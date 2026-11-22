@@ -1,9 +1,13 @@
-use crate::frontend::{Ctx, Diagnostic, ErrorKind, FileId, SourceMap, Span, StrId, Sym};
+use crate::{
+    frontend::{Ctx, Diagnostic, ErrorKind, FileId, SourceMap, Span, StrId, Sym},
+    utils::Color,
+};
 use std::{
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     num::IntErrorKind,
     str,
 };
+use strum::IntoStaticStr;
 
 struct Lexer<'src> {
     src: &'src [u8],
@@ -18,7 +22,8 @@ pub struct Token {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr, strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
 pub enum Suffix {
     U1,
     U8,
@@ -35,7 +40,9 @@ pub enum Suffix {
     F64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl Suffix {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, IntoStaticStr)]
 pub enum TokenKind {
     Ident(Sym),
     Int(u64, Option<Suffix>),
@@ -555,6 +562,100 @@ impl Lexer<'_> {
     }
 }
 
+pub struct TokenRenderer<'ctx> {
+    tokens: &'ctx Vec<Token>,
+    sources: &'ctx SourceMap,
+    ctx: &'ctx Ctx,
+    color: bool,
+}
+
+impl TokenRenderer<'_> {
+    fn paint(&self, c: Color, s: String) -> String {
+        if self.color {
+            format!("{c}{s}{}", Color::Reset)
+        } else {
+            s
+        }
+    }
+
+    fn value(&self, k: &TokenKind) -> String {
+        match *k {
+            TokenKind::Char(b) => format!("'{}'", (b as char).escape_debug()),
+            TokenKind::Int(v, s) => format!("{v}{}", s.map_or("", Suffix::into)),
+            TokenKind::Float(bits, s) => {
+                format!("{:?}{}", f64::from_bits(bits), s.map_or("", Suffix::into))
+            }
+            TokenKind::Str(id) => {
+                format!("\"{}\"", self.ctx.literals.resolve_str(id).escape_debug())
+            }
+            TokenKind::Ident(sym) => self.ctx.interner.resolve(sym).to_string(),
+            _ => String::new(),
+        }
+    }
+}
+
+impl TokenKind {
+    fn color(&self) -> Color {
+        match self {
+            TokenKind::Int(..)
+            | TokenKind::Float(..)
+            | TokenKind::Char(..)
+            | TokenKind::Str(..) => Color::Yellow,
+            TokenKind::Ident(..) => Color::Cyan,
+            TokenKind::Fn | TokenKind::Include | TokenKind::Intrinsic | TokenKind::Let => {
+                Color::Magenta
+            }
+            TokenKind::Error => Color::Red,
+            TokenKind::Eof => Color::Dim,
+            _ => Color::White,
+        }
+    }
+}
+
+impl Display for TokenRenderer<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut last_base = None;
+
+        for t in self.tokens {
+            let (file, local) = self.sources.lookup(t.span.start());
+            if last_base != Some(file.base) {
+                let header = format!("-- {}", file.name.display());
+                writeln!(f, "{}", self.paint(Color::Dim, header))?;
+                last_base = Some(file.base);
+            }
+
+            let (line, col) = file.line_col(local);
+            let lexeme = &file.text[local as usize..(t.span.end() - file.base) as usize];
+            let name: &'static str = (&t.kind).into();
+            let c = t.kind.color();
+
+            writeln!(
+                f,
+                "  {}{}{}{}",
+                self.paint(
+                    Color::Dim,
+                    format!("{:<7}", format!("{}:{}", line + 1, col + 1))
+                ),
+                self.paint(c, format!("{name:<7}")),
+                self.paint(c, format!("{:<16}", self.value(&t.kind))),
+                self.paint(Color::Dim, lexeme.escape_debug().to_string()),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> TokenRenderer<'a> {
+    pub fn new(tokens: &'a Vec<Token>, sources: &'a SourceMap, ctx: &'a Ctx, color: bool) -> Self {
+        TokenRenderer {
+            tokens,
+            sources,
+            color,
+            ctx,
+        }
+    }
+}
+
 fn is_continuation(b: u8) -> bool {
     (b & 0b1100_0000) == 0b1000_0000
 }
@@ -569,10 +670,4 @@ fn number_legal(b: u8, radix: u32) -> bool {
 
 fn number_legal10(b: u8) -> bool {
     number_legal(b, 10)
-}
-
-impl Display for Token {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.kind)
-    }
 }
