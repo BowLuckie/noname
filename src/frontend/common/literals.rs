@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Literals {
     map: HashMap<Box<str>, StrId>,
     strs: Vec<Box<str>>,

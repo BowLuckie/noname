@@ -18,12 +18,12 @@ fn main() -> ExitCode {
             let color = cli.color.should_color(&std::io::stderr());
             eprint!("{}", frontend.render_diagnostics(color));
 
-            let (hi, reset) = if color {
-                (Color::Red.to_string(), Color::Reset.to_string())
+            let (hl, reset) = if color {
+                (Color::BrightRed.to_string(), Color::Reset.to_string())
             } else {
                 Default::default()
             };
-            eprintln!("{hi}error{reset}: {e}");
+            eprintln!("{hl}error{reset}: {e}");
             ExitCode::FAILURE
         }
     }

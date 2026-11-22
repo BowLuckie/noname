@@ -2,7 +2,7 @@ use crate::frontend::{Diagnostic, Interner, Literals};
 
 use super::Severity;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Ctx {
     pub interner: Interner,
     pub literals: Literals,

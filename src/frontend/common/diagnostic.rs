@@ -1,5 +1,5 @@
 use crate::{
-    frontend::{SourceFile, SourceMap, Span},
+    frontend::{SourceMap, Span},
     utils::Color,
 };
 use core::fmt::{self, Display, Formatter};
@@ -25,6 +25,15 @@ pub struct Rendered<'a> {
 pub enum Severity {
     Warning,
     Error,
+}
+
+impl From<Severity> for Color {
+    fn from(severity: Severity) -> Self {
+        match severity {
+            Severity::Warning => Color::Yellow,
+            Severity::Error => Color::BrightRed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,15 +91,67 @@ impl Diagnostic {
         }
     }
 }
+impl Rendered<'_> {
+    fn format_span(&self, f: &mut impl fmt::Write, span: Span, hl: &str) -> fmt::Result {
+        let (file, start_line, start_col) = self.sources.locate(span);
+        let text = file.line_text(start_line);
+
+        let end_local = span.end() - file.base;
+        let (end_line, end_col) = file.line_col(end_local);
+
+        let width = if end_line == start_line {
+            end_col - start_col
+        } else {
+            text.chars().count().saturating_sub(start_col)
+        }
+        .max(1);
+
+        let gutter = (start_line + 1).to_string();
+        let pad = " ".repeat(gutter.len());
+
+        writeln!(f, "{pad}--> {}", span.format(self.sources)?)?;
+        writeln!(f, "{pad} |")?;
+        writeln!(f, "{gutter} | {text}")?;
+        writeln!(
+            f,
+            "{pad} | {}{hl}{}{reset}",
+            " ".repeat(start_col),
+            "^".repeat(width),
+            reset = if self.color {
+                Color::Reset.to_string()
+            } else {
+                String::new()
+            },
+        )?;
+
+        Ok(())
+    }
+
+    fn format_label(&self, f: &mut impl fmt::Write, label: &(Span, String)) -> fmt::Result {
+        let (hl, reset) = if self.color {
+            (Color::BrightCyan.to_string(), Color::Reset.to_string())
+        } else {
+            Default::default()
+        };
+
+        writeln!(f, "{hl}Help[{:?}]{reset}: {}", self.diag.kind, label.1,)?;
+
+        self.format_span(f, label.0, &hl)?;
+
+        Ok(())
+    }
+}
 
 impl Display for Rendered<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let d = self.diag;
-        let (hl, bold, reset) = if self.color {
+
+        let (hl, bold, reset, note_hl) = if self.color {
             (
-                Color::from_severity(d.severity).to_string(),
+                Color::from(d.severity).to_string(),
                 Color::Bold.to_string(),
                 Color::Reset.to_string(),
+                Color::BrightCyan.to_string(),
             )
         } else {
             Default::default()
@@ -102,39 +163,17 @@ impl Display for Rendered<'_> {
             d.severity, d.kind, d.message
         )?;
 
-        let (file, start_line, start_col) = self.sources.locate(d.span);
-        let text = file.line_text(start_line);
+        self.format_span(f, d.span, &hl)?;
 
-        let end_local = d.span.end() - file.base;
-        let (end_line, end_col) = file.line_col(end_local);
-        let width = if end_line == start_line {
-            end_col - start_col
-        } else {
-            text.chars().count().saturating_sub(start_col)
+        for label in &d.labels {
+            self.format_label(f, label)?;
         }
-        .max(1);
 
-        let gutter = (start_line + 1).to_string();
-        let pad = " ".repeat(gutter.len());
 
-        writeln!(
-            f,
-            "{pad}--> {}:{}:{}",
-            file.name.display(),
-            start_line + 1,
-            start_col + 1
-        )?;
-        writeln!(f, "{pad} |")?;
-        writeln!(f, "{gutter} | {text}")?;
-        writeln!(
-            f,
-            "{pad} | {}{hl}{}{reset}",
-            " ".repeat(start_col),
-            "^".repeat(width)
-        )?;
         for note in &d.notes {
-            writeln!(f, "{pad} = note: {note}")?;
+            writeln!(f, "{note_hl}- note{reset}: {note}")?;
         }
+
         Ok(())
     }
 }

@@ -1,3 +1,5 @@
+use core::fmt;
+use std::fmt::Write;
 use std::path::PathBuf;
 
 pub struct FileId {
@@ -22,6 +24,21 @@ impl Span {
     /// generates a non-offsetted span. use Lexer::span to generate with appropriate offset
     pub(crate) fn new(start: u32, end: u32) -> Self {
         Self { start, end }
+    }
+
+    pub fn format(&self, sources: &SourceMap) -> Result<String, fmt::Error> {
+        let mut buf = String::new();
+
+        let (file, start_line, start_col) = sources.locate(*self);
+        write!(
+            buf,
+            "{}:{}:{}",
+            file.name.display(),
+            start_line + 1,
+            start_col + 1
+        )?;
+
+        Ok(buf)
     }
 }
 

@@ -1,13 +1,8 @@
-use crate::frontend::{
-    Ctx, Diagnostic, FileId, Frontend, SourceMap, Span, StrId, Sym, diagnostic::ErrorKind,
-};
-use anyhow::Result;
+use crate::frontend::{Ctx, Diagnostic, ErrorKind, FileId, SourceMap, Span, StrId, Sym};
 use std::{
-    arch::asm,
     fmt::{self, Display, Formatter},
-    mem::transmute_copy,
-    num::{IntErrorKind, ParseIntError},
-    result, str,
+    num::IntErrorKind,
+    str,
 };
 
 struct Lexer<'src> {
@@ -86,29 +81,27 @@ pub enum TokenKind {
     Eof,
 }
 
-impl Frontend {
-    /// Lexer entry point
-    pub fn lex(sources: &SourceMap, file: FileId, ctx: &mut Ctx) -> Vec<Token> {
-        let f = sources.file(file);
-        let mut lx = Lexer {
-            src: f.text.as_bytes(),
-            pos: 0,
-            ctx,
-            base: f.base,
-        };
+/// Lexer entry point
+pub(super) fn lex(sources: &SourceMap, file: FileId, ctx: &mut Ctx) -> Vec<Token> {
+    let f = sources.file(file);
+    let mut lx = Lexer {
+        src: f.text.as_bytes(),
+        pos: 0,
+        ctx,
+        base: f.base,
+    };
 
-        let mut tokens = Vec::new();
-        loop {
-            let tok = lx.next_token();
-            let done = tok.kind == TokenKind::Eof;
-            tokens.push(tok);
-            if done {
-                break;
-            }
+    let mut tokens = Vec::new();
+    loop {
+        let tok = lx.next_token();
+        let done = tok.kind == TokenKind::Eof;
+        tokens.push(tok);
+        if done {
+            break;
         }
-
-        tokens
     }
+
+    tokens
 }
 
 impl Lexer<'_> {
@@ -280,18 +273,6 @@ impl Lexer<'_> {
         let start = self.pos;
         self.pos += 1;
 
-        let unterminated = |this: &mut Self| {
-            this.ctx.diags.push(
-                Diagnostic::error(
-                    Lexer::span(self, start, this.pos),
-                    ErrorKind::BadTextLiteral,
-                    "unterminated byte literal",
-                )
-                .with_label(self.span(start, start + 1), "literal starts here"),
-            );
-            this.token(TokenKind::Error, start)
-        };
-
         let value: Option<u8> = match self.peek() {
             None | Some(b'\n') => return self.unterminated_byte_literal(start),
             Some(b'\'') => {
@@ -356,15 +337,6 @@ impl Lexer<'_> {
         self.token(TokenKind::Error, start)
     }
 
-    fn bad_text_literal(&mut self, msg: impl Into<String>, start: usize) -> Token {
-        self.ctx.diags.push(Diagnostic::error(
-            self.span(start, self.pos),
-            ErrorKind::BadTextLiteral,
-            msg.into(),
-        ));
-        self.token(TokenKind::Error, start)
-    }
-
     fn escape(&mut self, esc_start: usize) -> Option<u8> {
         let b = self.peek()?;
         let val = match b {
@@ -422,7 +394,7 @@ impl Lexer<'_> {
             self.consume_while(number_legal10);
         }
 
-        if radix == 10 && self.at_exponant() {
+        if radix == 10 && self.at_exponent() {
             float = true;
             self.pos += 1;
             if matches!(self.peek(), Some(b'+' | b'-')) {
@@ -436,8 +408,7 @@ impl Lexer<'_> {
         if let Some(b) = self.peek()
             && b.is_ascii_digit()
         {
-            let msg =
-                &format!("invalid digit `{}` in base-{} literal", b as char, radix).to_string();
+            let msg = format!("invalid digit `{}` in base-{} literal", b as char, radix);
             self.consume_while(ident_legal);
             return self.bad_number(start, msg);
         }
@@ -445,7 +416,6 @@ impl Lexer<'_> {
         let suffix_start = self.pos;
         self.consume_while(ident_legal);
         let suffix_end = self.pos;
-        let end = suffix_end;
 
         let digits = str::from_utf8(&self.src[digits_start..digits_end])
             .expect("illegal characters will not be consumed");
@@ -483,9 +453,9 @@ impl Lexer<'_> {
                 Ok(n) => n,
                 Err(e) => {
                     let msg = if let IntErrorKind::PosOverflow = e.kind() {
-                        "int literal too large"
+                        "int literal too large".to_string()
                     } else {
-                        &format!("invalid int literal {}", cleaned).to_string()
+                        format!("invalid int literal {}", cleaned)
                     };
                     return self.bad_number(start, msg);
                 }
@@ -546,6 +516,7 @@ impl Lexer<'_> {
 
     fn parse_suffix(s: &str) -> Option<Suffix> {
         Some(match s {
+            "u1" => Suffix::U1,
             "u8" => Suffix::U8,
             "u16" => Suffix::U16,
             "u32" => Suffix::U32,
@@ -572,7 +543,7 @@ impl Lexer<'_> {
         self.token(TokenKind::Error, start)
     }
 
-    fn at_exponant(&self) -> bool {
+    fn at_exponent(&self) -> bool {
         if !matches!(self.peek(), Some(b'e' | b'E')) {
             return false;
         }

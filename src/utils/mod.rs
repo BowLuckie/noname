@@ -1,7 +1,5 @@
 use std::fmt::{self, Formatter};
 
-use crate::frontend::Severity;
-
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Color {
@@ -26,15 +24,6 @@ pub enum Color {
     BrightMagenta = 95,
     BrightCyan = 96,
     BrightWhite = 97,
-}
-
-impl Color {
-    pub fn from_severity(severity: Severity) -> Color {
-        match severity {
-            Severity::Warning => Color::Yellow,
-            Severity::Error => Color::BrightRed,
-        }
-    }
 }
 
 impl fmt::Display for Color {

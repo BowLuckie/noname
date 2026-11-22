@@ -1,12 +1,19 @@
 use TokenKind::*;
-use uname::frontend::{Ctx, Severity, Suffix, TokenKind};
+use uname::frontend::{Ctx, Frontend, Severity, Suffix, Token, TokenKind};
 
-fn run(_src: &str) -> (Vec<TokenKind>, Ctx) {
-    // let mut ctx = Ctx::default();
-    // let mut ks: Vec<_> = lex(src, &mut ctx).into_iter().map(|t| t.kind).collect();
-    // assert_eq!(ks.pop(), Some(Eof), "stream must end with Eof");
-    // (ks, ctx)
-    todo!("fix tests")
+fn lex(src: &str) -> (Vec<Token>, Ctx) {
+    let mut frontend = Frontend::new();
+    let file = frontend.add_file("test.un", src);
+    let toks = frontend.lex(file);
+    let ctx = frontend.ctx().clone();
+    (toks, ctx)
+}
+
+fn run(src: &str) -> (Vec<TokenKind>, Ctx) {
+    let (toks, ctx) = lex(src);
+    let mut ks: Vec<_> = toks.into_iter().map(|t| t.kind).collect();
+    assert_eq!(ks.pop(), Some(Eof), "stream must end with Eof");
+    (ks, ctx)
 }
 
 fn errors(ctx: &Ctx) -> usize {
@@ -68,17 +75,16 @@ fn identifiers() {
 #[test]
 fn spans() {
     let src = "fn main() { let x = 1.5e3 + 0xFFu8; }";
-    let mut ctx = Ctx::default();
-    // let toks = lex(src, &mut ctx);
+    let (toks, _) = lex(src);
     let mut prev = 0;
     for t in &toks {
-        assert!(prev <= t.span.start && t.span.start <= t.span.end);
-        assert!(t.span.end as usize <= src.len());
-        prev = t.span.end;
+        assert!(prev <= t.span.start() && t.span.start() <= t.span.end());
+        assert!(t.span.end() as usize <= src.len());
+        prev = t.span.end();
     }
     let eof = toks.last().unwrap();
     assert_eq!(
-        (eof.span.start, eof.span.end),
+        (eof.span.start(), eof.span.end()),
         (src.len() as u32, src.len() as u32)
     );
 }
@@ -149,7 +155,7 @@ fn illegal_chars_and_recovery() {
     assert_eq!(ks, vec![Error]);
     assert_eq!(errors(&ctx), 1);
     let d = &ctx.diags[0];
-    assert_eq!(d.span.end - d.span.start, 2);
+    assert_eq!(d.span.end() - d.span.start(), 2);
     assert!(!d.message.contains('\n'));
 
     let (ks, ctx) = run("foo@bar");
@@ -248,9 +254,8 @@ fn string_at_eof_without_trailing_newline_is_fine() {
 #[test]
 fn string_span_covers_quotes_and_escapes_but_table_holds_processed_bytes() {
     let src = r#""\n""#;
-    let mut ctx = Ctx::default();
-    // let toks = lex(src, &mut ctx);
-    assert_eq!((toks[0].span.start, toks[0].span.end), (0, 4));
+    let (toks, ctx) = lex(src);
+    assert_eq!((toks[0].span.start(), toks[0].span.end()), (0, 4));
     let Str(id) = toks[0].kind else {
         panic!("expected Str")
     };
@@ -348,9 +353,8 @@ fn char_escapes() {
 
 #[test]
 fn char_span_covers_quotes_and_escape() {
-    let mut ctx = Ctx::default();
-    // let toks = lex(r"'\n'", &mut ctx); // 4 source bytes, one byte of value
-    assert_eq!((toks[0].span.start, toks[0].span.end), (0, 4));
+    let (toks, _) = lex(r"'\n'"); // 4 source bytes, one byte of value
+    assert_eq!((toks[0].span.start(), toks[0].span.end()), (0, 4));
     assert_eq!(toks[0].kind, Char(10));
 }
 

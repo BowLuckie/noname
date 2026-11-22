@@ -1,27 +1,22 @@
+mod common;
+mod lexer;
+mod parser;
+
+pub use common::{
+    CompileFailed, Ctx, Diagnostic, ErrorKind, FileId, Interner, Literals, Severity, SourceFile,
+    SourceMap, Span, StrId, Sym,
+};
+pub use lexer::{Suffix, Token, TokenKind};
+pub use parser::{Node, NodeKind};
+
 use anyhow::{Context, Result};
 use std::fmt::Write;
 use std::{
-    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
 };
 
-mod ctx;
-mod diagnostic;
-mod interner;
-mod lexer;
-mod literals;
-mod source;
-
-pub use ctx::Ctx;
-pub use diagnostic::{Diagnostic, Severity};
-pub use interner::{Interner, Sym};
-pub use lexer::{Suffix, Token, TokenKind};
-pub use literals::{Literals, StrId};
-pub use source::*;
-
-use crate::CompilerOptions;
-use crate::{frontend::diagnostic::CompileFailed, utils::Color};
+use crate::{CompilerOptions, utils::Color};
 
 pub type SourceLoaderFn = Box<dyn Fn(&Path) -> io::Result<String>>;
 
@@ -47,24 +42,33 @@ impl Frontend {
         self.sources.add(name.into(), text.into())
     }
 
+    /// Lex a file already added with [`Frontend::add_file`].
+    pub fn lex(&mut self, file: FileId) -> Vec<Token> {
+        lexer::lex(&self.sources, file, &mut self.ctx)
+    }
+
+    pub fn ctx(&self) -> &Ctx {
+        &self.ctx
+    }
+
     pub fn run(&mut self, opts: &CompilerOptions) -> Result<()> {
         // TODO: when parsing, collect all the includes and queue those files for lexing and parsing
         // avoiding cyclic imports
 
         let root = self.root.clone().context("no root loaded")?;
         let text = (self.loader)(root.as_path())
-            .with_context(|| format!("falied to read {}", root.display()))?;
+            .with_context(|| format!("failed to read {}", root.display()))?;
 
         let id = self.sources.add(root, text);
-        let tokens = Frontend::lex(&self.sources, id, &mut self.ctx);
+        let tokens = self.lex(id);
 
         if opts.emit_tokens {
-            let (hi, reset) = if opts.color {
+            let (hl, reset) = if opts.color {
                 (Color::Green.to_string(), Color::Reset.to_string())
             } else {
                 Default::default()
             };
-            writeln!(self.out, "{hi}Output tokens{reset}")?;
+            writeln!(self.out, "{hl}Output tokens{reset}")?;
             for t in &tokens {
                 writeln!(self.out, "{t}")?;
             }
