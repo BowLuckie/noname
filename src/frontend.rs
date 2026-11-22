@@ -20,6 +20,7 @@ pub use lexer::{Suffix, Token, TokenKind};
 pub use literals::{Literals, StrId};
 pub use source::*;
 
+use crate::CompilerOptions;
 use crate::{frontend::diagnostic::CompileFailed, utils::Color};
 
 pub type SourceLoaderFn = Box<dyn Fn(&Path) -> io::Result<String>>;
@@ -29,6 +30,7 @@ pub struct Frontend {
     ctx: Ctx,
     root: Option<PathBuf>,
     loader: SourceLoaderFn,
+    out: Box<dyn io::Write>,
 }
 
 impl Frontend {
@@ -36,11 +38,16 @@ impl Frontend {
         Self::with_loader(|p| fs::read_to_string(p))
     }
 
+    pub fn with_output(mut self, out: impl io::Write + 'static) -> Self {
+        self.out = Box::new(out);
+        self
+    }
+
     pub fn add_file(&mut self, name: impl Into<PathBuf>, text: impl Into<String>) -> FileId {
         self.sources.add(name.into(), text.into())
     }
 
-    pub fn run(&mut self) -> Result<()> {
+    pub fn run(&mut self, opts: &CompilerOptions) -> Result<()> {
         // TODO: when parsing, collect all the includes and queue those files for lexing and parsing
         // avoiding cyclic imports
 
@@ -51,18 +58,29 @@ impl Frontend {
         let id = self.sources.add(root, text);
         let tokens = Frontend::lex(&self.sources, id, &mut self.ctx);
 
-        println!("\x1b[0;32mOutput tokens\x1b[0m");
-        tokens.iter().for_each(|f| println!("{f}"));
+        if opts.emit_tokens {
+            let (hi, reset) = if opts.color {
+                (Color::Green.to_string(), Color::Reset.to_string())
+            } else {
+                Default::default()
+            };
+            writeln!(self.out, "{hi}Output tokens{reset}")?;
+            for t in &tokens {
+                writeln!(self.out, "{t}")?;
+            }
+        }
+
         if self.ctx.has_error() {
             return Err(CompileFailed {
                 errors: self.ctx.error_count(),
             }
             .into());
         }
+
         Ok(())
     }
 
-    pub fn set_root(&mut self, path: String) {
+    pub fn set_root(&mut self, path: impl Into<PathBuf>) {
         self.root = Some(path.into());
     }
 
@@ -72,6 +90,7 @@ impl Frontend {
             sources: Default::default(),
             ctx: Default::default(),
             root: Default::default(),
+            out: Box::new(io::stdout()),
         }
     }
 

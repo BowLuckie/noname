@@ -1,15 +1,30 @@
-use anyhow::{Context, Ok, Result};
-use uname::frontend::Frontend;
+use std::process::ExitCode;
 
-fn main() -> Result<()> {
-    let path = std::env::args().nth(1).context("usage: uname <file>")?;
+use crate::args::Cli;
+use clap::Parser;
+use uname::{CompilerOptions, frontend::Frontend, utils::Color};
 
+mod args;
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
     let mut frontend = Frontend::new();
-    frontend.set_root(path);
+    frontend.set_root(cli.file.display().to_string());
+    let options = CompilerOptions::from(&cli);
 
-    if let Err(e) = frontend.run() {
-        eprint!("{}", frontend.render_diagnostics(true));
-        return Err(e);
+    match frontend.run(&options) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            let color = cli.color.should_color(&std::io::stderr());
+            eprint!("{}", frontend.render_diagnostics(color));
+
+            let (hi, reset) = if color {
+                (Color::Red.to_string(), Color::Reset.to_string())
+            } else {
+                Default::default()
+            };
+            eprintln!("{hi}error{reset}: {e}");
+            ExitCode::FAILURE
+        }
     }
-    Ok(())
 }
