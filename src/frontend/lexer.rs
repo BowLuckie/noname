@@ -1,5 +1,5 @@
 use crate::{
-    frontend::{Ctx, Diagnostic, ErrorKind, FileId, SourceMap, Span, StrId, Sym},
+    frontend::{Ctx, Diagnostic, ErrorKind, FileId, SourceMap, Span, Spanned, StrId, Sym},
     utils::Color,
 };
 use std::{
@@ -16,11 +16,7 @@ struct Lexer<'src> {
     pos: usize,
 }
 
-#[derive(Debug)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub span: Span,
-}
+pub type Token = Spanned<TokenKind>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr, strum::EnumString)]
 #[strum(serialize_all = "lowercase")]
@@ -40,15 +36,15 @@ pub enum Suffix {
     F64,
 }
 
-impl Suffix {}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, IntoStaticStr)]
 pub enum TokenKind {
     Ident(Sym),
     Int(u64, Option<Suffix>),
     Float(u64, Option<Suffix>),
     Str(StrId),
+    FStr(StrId),
     Char(u8),
+    Rune(u32),
 
     Fn,
     Include,
@@ -83,6 +79,8 @@ pub enum TokenKind {
     Gt,
     GtEq,
     Underscore,
+    Carrot, // ^
+    Hash,   // #
 
     Error,
     Eof,
@@ -172,8 +170,8 @@ impl Lexer<'_> {
         let kind = match b {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => return self.consume_word(),
             b'0'..=b'9' => return self.consume_number(),
-            b'\"' => return self.consume_string(),
-            b'\'' => return self.consume_byte_char(),
+            b'\"' => return self.consume_string(false),
+            b'\'' => return self.consume_char(None),
 
             b'(' => self.single(TokenKind::LParen),
             b')' => self.single(TokenKind::RParen),
@@ -188,6 +186,8 @@ impl Lexer<'_> {
             b'*' => self.single(TokenKind::Star),
             b'%' => self.single(TokenKind::Percent),
             b'/' => self.single(TokenKind::Slash),
+            b'#' => self.single(TokenKind::Hash),
+            b'^' => self.single(TokenKind::Carrot),
 
             b'=' => self.one_or_two(b'=', TokenKind::EqEq, TokenKind::Eq),
             b'!' => self.one_or_two(b'=', TokenKind::BangEq, TokenKind::Bang),
@@ -209,6 +209,17 @@ impl Lexer<'_> {
 
         let word = str::from_utf8(&self.src[start..end])
             .expect("illegal characters will not be consumed, and cant be in this slice");
+
+        if ["u", "b"].contains(&word)
+            && let Some(b'\'') = self.peek()
+        {
+            return self.consume_char(Some(*word.as_bytes().first().unwrap()));
+        } else if word == "f"
+            && let Some(b'"') = self.peek()
+        {
+            return self.consume_string(true);
+        }
+
         let kind = match word {
             "_" => TokenKind::Underscore,
             "fn" => TokenKind::Fn,
@@ -221,7 +232,7 @@ impl Lexer<'_> {
         self.token(kind, start)
     }
 
-    fn consume_string(&mut self) -> Token {
+    fn consume_string(&mut self, is_format: bool) -> Token {
         debug_assert_eq!(self.peek(), Some(b'"'));
         let start = self.pos;
         self.pos += 1;
@@ -275,63 +286,132 @@ impl Lexer<'_> {
         self.token(TokenKind::Str(id), start)
     }
 
-    fn consume_byte_char(&mut self) -> Token {
-        debug_assert_eq!(self.peek(), Some(b'\''));
-        let start = self.pos;
-        self.pos += 1;
+    fn consume_char(&mut self, prefix: Option<u8>) -> Token {
+        #[derive(PartialEq, Eq)]
+        enum Prefix {
+            Char,
+            Rune,
+            Either,
+        }
 
-        let value: Option<u8> = match self.peek() {
-            None | Some(b'\n') => return self.unterminated_byte_literal(start),
-            Some(b'\'') => {
-                self.pos += 1;
-                self.text_error(start, "empty byte literal");
-                return self.token(TokenKind::Error, start);
-            }
-            Some(b'\\') => {
-                let esc_start = self.pos;
-                self.pos += 1;
-                if self.peek().is_none() {
-                    return self.unterminated_byte_literal(start);
-                }
-                self.escape(esc_start)
-            }
-            Some(b) if !b.is_ascii() => {
-                let ch_start = self.pos;
-                self.pos += 1;
-                while matches!(self.peek(), Some(b) if is_continuation(b)) {
-                    self.pos += 1;
-                }
-                self.text_error(ch_start, "byte literals must be ASCII");
-                None
-            }
-            Some(b) => {
-                self.pos += 1;
-                Some(b)
-            }
+        debug_assert_eq!(self.peek(), Some(b'\''));
+        let mut prefix = if prefix == Some(b'u') {
+            Prefix::Rune
+        } else if prefix == Some(b'b') {
+            Prefix::Char
+        } else if prefix.is_none() {
+            Prefix::Either
+        } else {
+            panic!("compiler panic: illegal prefix");
         };
 
-        let mut errored = value.is_none();
+        let opening_quote = self.pos;
+        self.pos += 1;
+        let data_start = self.pos;
 
-        if self.peek() == Some(b'\'') {
-            self.pos += 1;
-        } else {
-            let extra = self.pos;
-            self.consume_while(|b| b != b'\'' && b != b'\n');
-            if self.peek() == Some(b'\'') {
-                self.pos += 1;
-                if !errored {
-                    self.text_error(extra, "byte literal holds more than one byte");
-                }
-            } else if !errored {
-                return self.unterminated_byte_literal(start);
+        self.consume_while(|b| b != b'\'' && b != b'\n');
+        if let Some(b'\n') = self.peek() {
+            return self.unterminated_byte_literal(opening_quote);
+        }
+
+        let closing_quote = self.pos;
+        self.pos += 1;
+
+        let data = str::from_utf8(&self.src[data_start..closing_quote]).unwrap();
+
+        let (chars, bytes) = (data.chars().count(), data.len());
+
+        dbg!(chars, bytes);
+
+        if chars != 1 {
+            return self.text_error_with_note(
+                data_start,
+                "charecter literal can only hold one charecter",
+                "consider using a string literal using \"\"",
+            );
+        }
+
+        if bytes == 0 || chars == 0 {
+            return self.text_error(data_start, "character literal must not be empty");
+        }
+
+        if prefix == Prefix::Char && bytes != 1 {
+            return self.text_error_with_note(data_start, "char literals must be ASCII", "");
+        }
+
+        if prefix == Prefix::Rune && bytes > 4 {
+            return self.text_error(
+                data_start,
+                "charecters encodings larger than utf-8 cannot be represented with a rune literal",
+            );
+        }
+
+        match prefix {
+            Prefix::Char => self.token(
+                TokenKind::Char(*data.as_bytes().first().unwrap()),
+                data_start,
+            ),
+            _ => {
+                todo!()
             }
-            errored = true;
         }
 
-        match value {
-            Some(v) if !errored => self.token(TokenKind::Char(v), start),
-            _ => self.token(TokenKind::Error, start),
-        }
+        // let value: Option<u8> = match self.peek() {
+        //     None | Some(b'\n') => return self.unterminated_byte_literal(start),
+        //     Some(b'\'') => {
+        //         self.pos += 1;
+        //         self.text_error(start, "empty byte literal");
+        //         return self.token(TokenKind::Error, start);
+        //     }
+        //     Some(b'\\') => {
+        //         let esc_start = self.pos;
+        //         self.pos += 1;
+        //         if self.peek().is_none() {
+        //             return self.unterminated_byte_literal(start);
+        //         }
+        //         self.escape(esc_start)
+        //     }
+        //     Some(b) if !b.is_ascii() => {
+        //         let ch_start = self.pos;
+        //         self.pos += 1;
+        //         while matches!(self.peek(), Some(b) if is_continuation(b)) {
+        //             self.pos += 1;
+        //         }
+        //         self.text_error(ch_start, "byte literals must be ASCII");
+        //         None
+        //     }
+        //     Some(b) => {
+        //         self.pos += 1;
+        //         Some(b)
+        //     }
+        // };
+        //
+        // let mut errored = value.is_none();
+        //
+        // if self.peek() == Some(b'\'') {
+        //     self.pos += 1;
+        // } else {
+        //     let extra_start = self.pos;
+        //     self.consume_while(|b| b != b'\'' && b != b'\n');
+        //     if self.peek() == Some(b'\'') {
+        //         self.pos += 1;
+        //         if !errored {
+        //             self.text_error_with_note(
+        //                 extra_start,
+        //                 "char literal holds more than one byte",
+        //                 "if you are trying to store utf-8 chars, try using a rune instead u'...'",
+        //             );
+        //         }
+        //     } else if !errored {
+        //         return self.unterminated_byte_literal(start);
+        //     }
+        //     errored = true;
+        // }
+        //
+        // match value {
+        //     Some(v) if !errored => self.token(TokenKind::Char(v), start),
+        //     _ => self.token(TokenKind::Error, start),
+        // }
     }
 
     fn unterminated_byte_literal(&mut self, start: usize) -> Token {
@@ -367,12 +447,22 @@ impl Lexer<'_> {
         val
     }
 
-    fn text_error(&mut self, start: usize, msg: impl Into<String>) {
-        self.ctx.diags.push(Diagnostic::error(
-            self.span(start, self.pos),
-            ErrorKind::BadTextLiteral,
-            msg,
-        ));
+    fn text_error(&mut self, start: usize, msg: impl Into<String>) -> Token {
+        let d = Diagnostic::error(self.span(start, self.pos), ErrorKind::BadTextLiteral, msg);
+        self.ctx.diags.push(d);
+        self.error_token(start)
+    }
+
+    fn text_error_with_note(
+        &mut self,
+        start: usize,
+        msg: impl Into<String>,
+        note: impl Into<String>,
+    ) -> Token {
+        let d = Diagnostic::error(self.span(start, self.pos), ErrorKind::BadTextLiteral, msg)
+            .with_note(note);
+        self.ctx.diags.push(d);
+        self.error_token(start)
     }
 
     fn consume_number(&mut self) -> Token {
@@ -498,6 +588,10 @@ impl Lexer<'_> {
             span: self.span(start, self.pos),
             kind,
         }
+    }
+
+    fn error_token(&self, start: usize) -> Token {
+        self.token(TokenKind::Error, start)
     }
 
     fn single(&mut self, kind: TokenKind) -> TokenKind {

@@ -1,14 +1,5 @@
-mod common;
-mod lexer;
-mod parser;
-
-pub use common::{
-    CompileFailed, Ctx, Diagnostic, ErrorKind, FileId, Interner, Literals, Severity, SourceFile,
-    SourceMap, Span, StrId, Sym,
-};
-pub use lexer::{Suffix, Token, TokenKind};
-pub use parser::{Node, NodeKind};
-
+use crate::frontend::lexer::TokenRenderer;
+use crate::{CompilerOptions, utils::Color};
 use anyhow::{Context, Result};
 use std::fmt::Write;
 use std::{
@@ -16,8 +7,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::frontend::lexer::TokenRenderer;
-use crate::{CompilerOptions, utils::Color};
+mod common;
+mod lexer;
+mod parser;
+
+pub use common::{
+    CompileFailed, Ctx, Diagnostic, ErrorKind, FileId, Interner, Literals, Severity, SourceFile,
+    SourceMap, Span, Spanned, StrId, Sym,
+};
+pub use lexer::{Suffix, Token, TokenKind};
+pub use parser::{Node, NodeKind};
 
 pub type SourceLoaderFn = Box<dyn Fn(&Path) -> io::Result<String>>;
 

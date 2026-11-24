@@ -12,6 +12,25 @@ pub struct Span {
     end: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct Spanned<T> {
+    pub kind: T,
+    pub span: Span,
+}
+
+#[derive(Default, Debug)]
+pub struct SourceFile {
+    pub name: PathBuf,
+    pub text: Box<str>,
+    pub base: u32,
+    line_starts: Vec<u32>,
+}
+
+#[derive(Default, Debug)]
+pub struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
 impl Span {
     pub fn start(&self) -> u32 {
         self.start
@@ -40,19 +59,6 @@ impl Span {
 
         Ok(buf)
     }
-}
-
-#[derive(Default, Debug)]
-pub struct SourceFile {
-    pub name: PathBuf,
-    pub text: Box<str>,
-    pub base: u32,
-    line_starts: Vec<u32>,
-}
-
-#[derive(Default, Debug)]
-pub struct SourceMap {
-    files: Vec<SourceFile>,
 }
 
 impl SourceMap {

@@ -5,4 +5,8 @@ pub struct Node {
     pub span: Span,
 }
 
-pub enum NodeKind {}
+pub enum NodeKind {
+    Program(Vec<Node>),
+    Expr,
+}
+

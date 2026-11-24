@@ -8,4 +8,4 @@ pub use ctx::Ctx;
 pub use diagnostic::{CompileFailed, Diagnostic, ErrorKind, Severity};
 pub use interner::{Interner, Sym};
 pub use literals::{Literals, StrId};
-pub use source::{FileId, SourceFile, SourceMap, Span};
+pub use source::{FileId, SourceFile, SourceMap, Span, Spanned};
