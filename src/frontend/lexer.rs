@@ -3,8 +3,10 @@ use crate::{
     utils::Color,
 };
 use std::{
+    char,
     fmt::{self, Debug, Display, Formatter},
     num::IntErrorKind,
+    ops::Index,
     str,
 };
 use strum::IntoStaticStr;
@@ -255,7 +257,12 @@ impl Lexer<'_> {
                         break;
                     }
                     match self.escape(esc_start) {
-                        Some(v) => buf.push(v),
+                        Some(v) => buf.extend_from_slice(
+                            char::from_u32(v)
+                                .unwrap()
+                                .encode_utf8(&mut [0; 4])
+                                .as_bytes(),
+                        ),
                         None => bad_escape = true,
                     }
                 }
@@ -295,7 +302,7 @@ impl Lexer<'_> {
         }
 
         debug_assert_eq!(self.peek(), Some(b'\''));
-        let mut prefix = if prefix == Some(b'u') {
+        let prefix = if prefix == Some(b'u') {
             Prefix::Rune
         } else if prefix == Some(b'b') {
             Prefix::Char
@@ -317,42 +324,69 @@ impl Lexer<'_> {
         let closing_quote = self.pos;
         self.pos += 1;
 
-        let data = str::from_utf8(&self.src[data_start..closing_quote]).unwrap();
-
+        let mut data = str::from_utf8(&self.src[data_start..closing_quote])
+            .unwrap()
+            .to_owned();
         let (chars, bytes) = (data.chars().count(), data.len());
-
-        dbg!(chars, bytes);
-
-        if chars != 1 {
-            return self.text_error_with_note(
-                data_start,
-                "charecter literal can only hold one charecter",
-                "consider using a string literal using \"\"",
-            );
-        }
 
         if bytes == 0 || chars == 0 {
             return self.text_error(data_start, "character literal must not be empty");
         }
 
-        if prefix == Prefix::Char && bytes != 1 {
-            return self.text_error_with_note(data_start, "char literals must be ASCII", "");
+        let mut b = None;
+
+        if data.as_bytes()[0] == b'\\' {
+            if data.as_bytes().get(1).is_some() {
+                let old_pos = self.pos;
+                self.pos = data_start + 1;
+                b = self.escape(data_start);
+                self.pos = old_pos;
+            } else {
+                return self.unterminated_byte_literal(data_start);
+            }
         }
 
-        if prefix == Prefix::Rune && bytes > 4 {
-            return self.text_error(
+        if let Some(b) = b {
+            data = char::from_u32(b).unwrap().into();
+        }
+
+        let (chars, bytes) = (data.chars().count(), data.len());
+
+        if chars != 1 {
+            return self.text_error_with_note(
                 data_start,
-                "charecters encodings larger than utf-8 cannot be represented with a rune literal",
+                "character literal can only hold one character",
+                "consider using a string literal using \"\"",
             );
         }
 
         match prefix {
-            Prefix::Char => self.token(
-                TokenKind::Char(*data.as_bytes().first().unwrap()),
-                data_start,
-            ),
-            _ => {
-                todo!()
+            Prefix::Char => {
+                if bytes != 1 {
+                    return self.text_error(data_start, "character literal must be ascii");
+                }
+
+                self.token(TokenKind::Char(data.as_bytes()[0]), data_start)
+            }
+            Prefix::Rune => {
+                if bytes > 4 {
+                    return self.text_error(data_start, "rune literals cannot exceed 4 bytes");
+                }
+
+                self.token(
+                    TokenKind::Rune(data.chars().next().unwrap() as u32),
+                    data_start,
+                )
+            }
+            Prefix::Either => {
+                if bytes == 1 {
+                    self.token(TokenKind::Char(data.as_bytes()[0]), data_start)
+                } else {
+                    self.token(
+                        TokenKind::Rune(data.chars().next().unwrap() as u32),
+                        data_start,
+                    )
+                }
             }
         }
 
@@ -424,7 +458,7 @@ impl Lexer<'_> {
         self.token(TokenKind::Error, start)
     }
 
-    fn escape(&mut self, esc_start: usize) -> Option<u8> {
+    fn escape(&mut self, esc_start: usize) -> Option<u32> {
         let b = self.peek()?;
         let val = match b {
             b'n' => Some(b'\n'),
@@ -444,7 +478,7 @@ impl Lexer<'_> {
             let text = String::from_utf8_lossy(&self.src[esc_start..self.pos]);
             self.text_error(esc_start, format!("unknown escape sequence `{text}`"));
         }
-        val
+        val.map(|inner_b| inner_b as u32)
     }
 
     fn text_error(&mut self, start: usize, msg: impl Into<String>) -> Token {
@@ -675,11 +709,12 @@ impl TokenRenderer<'_> {
     fn value(&self, k: &TokenKind) -> String {
         match *k {
             TokenKind::Char(b) => format!("'{}'", (b as char).escape_debug()),
+            TokenKind::Rune(u) => format!("'{}'", (char::from_u32(u).unwrap()).escape_debug()),
             TokenKind::Int(v, s) => format!("{v}{}", s.map_or("", Suffix::into)),
             TokenKind::Float(bits, s) => {
                 format!("{:?}{}", f64::from_bits(bits), s.map_or("", Suffix::into))
             }
-            TokenKind::Str(id) => {
+            TokenKind::Str(id) | TokenKind::FStr(id) => {
                 format!("\"{}\"", self.ctx.literals.resolve_str(id).escape_debug())
             }
             TokenKind::Ident(sym) => self.ctx.interner.resolve(sym).to_string(),
@@ -694,7 +729,9 @@ impl TokenKind {
             TokenKind::Int(..)
             | TokenKind::Float(..)
             | TokenKind::Char(..)
-            | TokenKind::Str(..) => Color::Yellow,
+            | TokenKind::Str(..)
+            | TokenKind::FStr(_)
+            | TokenKind::Rune(_) => Color::Yellow,
             TokenKind::Ident(..) => Color::Cyan,
             TokenKind::Fn | TokenKind::Include | TokenKind::Intrinsic | TokenKind::Let => {
                 Color::Magenta

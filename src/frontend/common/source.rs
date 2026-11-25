@@ -6,6 +6,7 @@ pub struct FileId {
     inner: u32,
 }
 
+/// a section of text based off a local offset. see [`SourceMap`] and [`SourceFile`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     start: u32,
