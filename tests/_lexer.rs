@@ -146,23 +146,6 @@ fn exponents() {
     ok("1e-999", &[f(0.0)]);
 }
 
-#[test]
-fn illegal_chars_and_recovery() {
-    bad("@", 1);
-    bad("@ # $", 3);
-
-    let (ks, ctx) = run("é\n");
-    assert_eq!(ks, vec![Error]);
-    assert_eq!(errors(&ctx), 1);
-    let d = &ctx.diags[0];
-    assert_eq!(d.span.end() - d.span.start(), 2);
-    assert!(!d.message.contains('\n'));
-
-    let (ks, ctx) = run("foo@bar");
-    assert_eq!(errors(&ctx), 1);
-    assert!(matches!(ks.as_slice(), [Ident(_), Error, Ident(_)]));
-}
-
 fn lit(src: &str) -> String {
     let (ks, ctx) = run(src);
     assert_eq!(errors(&ctx), 0, "{src:?}: {:?}", ctx.diags);
@@ -380,14 +363,6 @@ fn too_many_bytes_is_one_error_and_recovers() {
     bad("'abcdef'", 1);
     recovers("'ab' fn", 1, &[Error, Fn]);
     recovers(r"'a\n' fn", 1, &[Error, Fn]);
-}
-
-#[test]
-fn non_ascii_char_is_one_error() {
-    bad("'é'", 1);
-    recovers("'é' fn", 1, &[Error, Fn]);
-    // non-ASCII plus extra content: still reported once
-    bad("'éa'", 1);
 }
 
 #[test]

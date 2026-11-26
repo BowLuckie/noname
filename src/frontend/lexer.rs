@@ -6,7 +6,6 @@ use std::{
     char,
     fmt::{self, Debug, Display, Formatter},
     num::IntErrorKind,
-    ops::Index,
     str,
 };
 use strum::IntoStaticStr;
@@ -237,6 +236,26 @@ impl Lexer<'_> {
     fn consume_string(&mut self, is_format: bool) -> Token {
         debug_assert_eq!(self.peek(), Some(b'"'));
         let start = self.pos;
+        match self.process_string(is_format, false) {
+            Ok(s) => {
+                let str_id = self.ctx.literals.intern_str(&s);
+                self.token(TokenKind::Str(str_id), start)
+            }
+            Err(e) => e,
+        }
+    }
+
+    fn process_string(&mut self, is_format: bool, for_char: bool) -> Result<String, Token> {
+        let delim = if for_char { b'\'' } else { b'"' };
+        assert!(
+            !(is_format && for_char),
+            "compiler error: illegal string process attempt"
+        );
+        if is_format {
+            // TODO: format string
+            unimplemented!("format strings");
+        }
+        let start = self.pos;
         self.pos += 1;
 
         let mut buf: Vec<u8> = Vec::new();
@@ -245,9 +264,12 @@ impl Lexer<'_> {
 
         while let Some(b) = self.peek() {
             match b {
-                b'"' => {
+                c if c == delim => {
                     self.pos += 1;
                     terminated = true;
+                    break;
+                }
+                b'\n' if for_char => {
                     break;
                 }
                 b'\\' => {
@@ -256,6 +278,7 @@ impl Lexer<'_> {
                     if self.peek().is_none() {
                         break;
                     }
+
                     match self.escape(esc_start) {
                         Some(v) => buf.extend_from_slice(
                             char::from_u32(v)
@@ -267,8 +290,16 @@ impl Lexer<'_> {
                     }
                 }
                 _ => {
-                    buf.push(b);
-                    self.pos += 1;
+                    let ch = std::str::from_utf8(&self.src[self.pos..])
+                        .expect("source must be valid UTF-8")
+                        .chars()
+                        .next()
+                        .unwrap();
+
+                    let len = ch.len_utf8();
+
+                    buf.extend_from_slice(&self.src[self.pos..self.pos + len]);
+                    self.pos += len;
                 }
             }
         }
@@ -282,15 +313,13 @@ impl Lexer<'_> {
                 )
                 .with_label(self.span(start, start + 1), "string starts here"),
             );
-            return self.token(TokenKind::Error, start);
+            return Err(self.token(TokenKind::Error, start));
         }
         if bad_escape {
-            return self.token(TokenKind::Error, start);
+            return Err(self.token(TokenKind::Error, start));
         }
 
-        let text = String::from_utf8(buf).expect("source is UTF-8 and escapes are ASCII");
-        let id = self.ctx.literals.intern_str(&text);
-        self.token(TokenKind::Str(id), start)
+        Ok(String::from_utf8(buf).expect("source is UTF-8 and escapes are ASCII"))
     }
 
     fn consume_char(&mut self, prefix: Option<u8>) -> Token {
@@ -313,44 +342,22 @@ impl Lexer<'_> {
         };
 
         let opening_quote = self.pos;
-        self.pos += 1;
-        let data_start = self.pos;
+        let data_start = self.pos + 1;
 
-        self.consume_while(|b| b != b'\'' && b != b'\n');
         if let Some(b'\n') = self.peek() {
             return self.unterminated_byte_literal(opening_quote);
         }
 
-        let closing_quote = self.pos;
-        self.pos += 1;
+        let data = match self.process_string(false, true) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
 
-        let mut data = str::from_utf8(&self.src[data_start..closing_quote])
-            .unwrap()
-            .to_owned();
         let (chars, bytes) = (data.chars().count(), data.len());
 
         if bytes == 0 || chars == 0 {
             return self.text_error(data_start, "character literal must not be empty");
         }
-
-        let mut b = None;
-
-        if data.as_bytes()[0] == b'\\' {
-            if data.as_bytes().get(1).is_some() {
-                let old_pos = self.pos;
-                self.pos = data_start + 1;
-                b = self.escape(data_start);
-                self.pos = old_pos;
-            } else {
-                return self.unterminated_byte_literal(data_start);
-            }
-        }
-
-        if let Some(b) = b {
-            data = char::from_u32(b).unwrap().into();
-        }
-
-        let (chars, bytes) = (data.chars().count(), data.len());
 
         if chars != 1 {
             return self.text_error_with_note(
@@ -363,28 +370,28 @@ impl Lexer<'_> {
         match prefix {
             Prefix::Char => {
                 if bytes != 1 {
-                    return self.text_error(data_start, "character literal must be ascii");
+                    return self.text_error(opening_quote, "character literal must be ascii");
                 }
 
-                self.token(TokenKind::Char(data.as_bytes()[0]), data_start)
+                self.token(TokenKind::Char(data.as_bytes()[0]), opening_quote)
             }
             Prefix::Rune => {
                 if bytes > 4 {
-                    return self.text_error(data_start, "rune literals cannot exceed 4 bytes");
+                    return self.text_error(opening_quote, "rune literals cannot exceed 4 bytes");
                 }
 
                 self.token(
                     TokenKind::Rune(data.chars().next().unwrap() as u32),
-                    data_start,
+                    opening_quote,
                 )
             }
             Prefix::Either => {
                 if bytes == 1 {
-                    self.token(TokenKind::Char(data.as_bytes()[0]), data_start)
+                    self.token(TokenKind::Char(data.as_bytes()[0]), opening_quote)
                 } else {
                     self.token(
                         TokenKind::Rune(data.chars().next().unwrap() as u32),
-                        data_start,
+                        opening_quote,
                     )
                 }
             }
