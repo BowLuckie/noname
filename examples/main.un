@@ -1,2 +1,1 @@
-f'a'
-f"ajija"
+f"we love format strings! {a} or do we? {self.explode()}"

@@ -1,10 +1,14 @@
 use crate::{
-    frontend::{Ctx, Diagnostic, ErrorKind, FileId, SourceMap, Span, Spanned, StrId, Sym},
+    frontend::{
+        Ctx, Diagnostic, ErrorKind, FileId, SourceMap, Span, Spanned, StrId, Sym,
+        common::{FPart, FStrId, FString},
+    },
     utils::Color,
 };
 use std::{
     char,
     fmt::{self, Debug, Display, Formatter},
+    mem,
     num::IntErrorKind,
     str,
 };
@@ -43,7 +47,7 @@ pub enum TokenKind {
     Int(u64, Option<Suffix>),
     Float(u64, Option<Suffix>),
     Str(StrId),
-    FStr(StrId),
+    FStr(FStrId),
     Char(u8),
     Rune(u32),
 
@@ -85,6 +89,30 @@ pub enum TokenKind {
 
     Error,
     Eof,
+}
+
+#[derive(Clone, Copy)]
+enum Quote {
+    Str,
+    Char,
+}
+
+impl Quote {
+    fn delim(self) -> u8 {
+        match self {
+            Quote::Str => b'"',
+            Quote::Char => b'\'',
+        }
+    }
+    fn what(self) -> &'static str {
+        match self {
+            Quote::Str => "string literal",
+            Quote::Char => "character literal",
+        }
+    }
+    fn control_permitted(self) -> bool {
+        matches!(self, Quote::Str)
+    }
 }
 
 /// Lexer entry point
@@ -233,61 +261,61 @@ impl Lexer<'_> {
         self.token(kind, start)
     }
 
-    fn consume_string(&mut self, is_format: bool) -> Token {
+    fn consume_string(&mut self, _is_format: bool) -> Token {
         debug_assert_eq!(self.peek(), Some(b'"'));
         let start = self.pos;
-        match self.process_string(is_format, false) {
-            Ok(s) => {
-                let str_id = self.ctx.literals.intern_str(&s);
-                self.token(TokenKind::Str(str_id), start)
+        if _is_format {
+            match self.process_format() {
+                Ok(fs) => {
+                    let str_id = self.ctx.literals.add_fstr(fs);
+                    self.token(TokenKind::FStr(str_id), start)
+                }
+                Err(e) => e,
             }
-            Err(e) => e,
+        } else {
+            match self.process_string(Quote::Str) {
+                Ok(s) => {
+                    let str_id = self.ctx.literals.intern_str(&s);
+                    self.token(TokenKind::Str(str_id), start)
+                }
+                Err(e) => e,
+            }
         }
     }
 
-    fn process_string(&mut self, is_format: bool, for_char: bool) -> Result<String, Token> {
-        let delim = if for_char { b'\'' } else { b'"' };
-        assert!(
-            !(is_format && for_char),
-            "compiler error: illegal string process attempt"
-        );
-        if is_format {
-            // TODO: format string
-            unimplemented!("format strings");
-        }
+    fn process_string(&mut self, quote: Quote) -> Result<String, Token> {
+        let what = quote.what();
         let start = self.pos;
         self.pos += 1;
 
         let mut buf: Vec<u8> = Vec::new();
         let mut terminated = false;
-        let mut bad_escape = false;
+        let mut bad = false;
 
         while let Some(b) = self.peek() {
             match b {
-                c if c == delim => {
+                c if c == quote.delim() => {
                     self.pos += 1;
                     terminated = true;
                     break;
                 }
-                b'\n' if for_char => {
+                b'\n' if !quote.control_permitted() => {
                     break;
                 }
-                b'\\' => {
-                    let esc_start = self.pos;
+                c if !quote.control_permitted() && c.is_ascii_control() => {
+                    self.text_error_with_note(
+                        self.pos,
+                        "char literals cannot have control characters in them",
+                        format!("try writing the escape code '{}' instead", c.escape_ascii()),
+                    );
                     self.pos += 1;
-                    if self.peek().is_none() {
-                        break;
-                    }
-
-                    match self.escape(esc_start) {
-                        Some(v) => buf.extend_from_slice(
-                            char::from_u32(v)
-                                .unwrap()
-                                .encode_utf8(&mut [0; 4])
-                                .as_bytes(),
-                        ),
-                        None => bad_escape = true,
-                    }
+                    bad = true;
+                }
+                // b'\r' => {
+                //
+                // }
+                b'\\' => {
+                    self.process_escape(&mut buf, &mut bad);
                 }
                 _ => {
                     let ch = std::str::from_utf8(&self.src[self.pos..])
@@ -309,17 +337,35 @@ impl Lexer<'_> {
                 Diagnostic::error(
                     self.span(start, self.pos),
                     ErrorKind::BadTextLiteral,
-                    "unterminated string literal",
+                    format!("unterminated {}", what),
                 )
-                .with_label(self.span(start, start + 1), "string starts here"),
+                .with_label(self.span(start, start + 1), format!("{} starts here", what)),
             );
             return Err(self.token(TokenKind::Error, start));
         }
-        if bad_escape {
+        if bad {
             return Err(self.token(TokenKind::Error, start));
         }
 
-        Ok(String::from_utf8(buf).expect("source is UTF-8 and escapes are ASCII"))
+        Ok(String::from_utf8(buf).expect("source is utf8"))
+    }
+
+    fn process_escape(&mut self, buf: &mut Vec<u8>, bad: &mut bool) {
+        let esc_start = self.pos;
+        self.pos += 1;
+        if self.peek().is_none() {
+            return;
+        }
+
+        match self.escape(esc_start) {
+            Some(v) => buf.extend_from_slice(
+                char::from_u32(v)
+                    .unwrap()
+                    .encode_utf8(&mut [0; 4])
+                    .as_bytes(),
+            ),
+            None => *bad = true,
+        }
     }
 
     fn consume_char(&mut self, prefix: Option<u8>) -> Token {
@@ -348,14 +394,14 @@ impl Lexer<'_> {
             return self.unterminated_byte_literal(opening_quote);
         }
 
-        let data = match self.process_string(false, true) {
+        let data = match self.process_string(Quote::Char) {
             Ok(s) => s,
             Err(e) => return e,
         };
 
         let (chars, bytes) = (data.chars().count(), data.len());
 
-        if bytes == 0 || chars == 0 {
+        if bytes == 0 {
             return self.text_error(data_start, "character literal must not be empty");
         }
 
@@ -367,92 +413,18 @@ impl Lexer<'_> {
             );
         }
 
-        match prefix {
-            Prefix::Char => {
-                if bytes != 1 {
-                    return self.text_error(opening_quote, "character literal must be ascii");
-                }
-
-                self.token(TokenKind::Char(data.as_bytes()[0]), opening_quote)
+        let ch = data.chars().next().unwrap();
+        match (prefix, ch.is_ascii()) {
+            (Prefix::Char, false) => {
+                self.text_error(opening_quote, "character literal must be ascii")
             }
-            Prefix::Rune => {
-                if bytes > 4 {
-                    return self.text_error(opening_quote, "rune literals cannot exceed 4 bytes");
-                }
-
-                self.token(
-                    TokenKind::Rune(data.chars().next().unwrap() as u32),
-                    opening_quote,
-                )
+            (Prefix::Char, true) | (Prefix::Either, true) => {
+                self.token(TokenKind::Char(ch as u8), opening_quote)
             }
-            Prefix::Either => {
-                if bytes == 1 {
-                    self.token(TokenKind::Char(data.as_bytes()[0]), opening_quote)
-                } else {
-                    self.token(
-                        TokenKind::Rune(data.chars().next().unwrap() as u32),
-                        opening_quote,
-                    )
-                }
+            (Prefix::Rune, _) | (Prefix::Either, false) => {
+                self.token(TokenKind::Rune(ch as u32), opening_quote)
             }
         }
-
-        // let value: Option<u8> = match self.peek() {
-        //     None | Some(b'\n') => return self.unterminated_byte_literal(start),
-        //     Some(b'\'') => {
-        //         self.pos += 1;
-        //         self.text_error(start, "empty byte literal");
-        //         return self.token(TokenKind::Error, start);
-        //     }
-        //     Some(b'\\') => {
-        //         let esc_start = self.pos;
-        //         self.pos += 1;
-        //         if self.peek().is_none() {
-        //             return self.unterminated_byte_literal(start);
-        //         }
-        //         self.escape(esc_start)
-        //     }
-        //     Some(b) if !b.is_ascii() => {
-        //         let ch_start = self.pos;
-        //         self.pos += 1;
-        //         while matches!(self.peek(), Some(b) if is_continuation(b)) {
-        //             self.pos += 1;
-        //         }
-        //         self.text_error(ch_start, "byte literals must be ASCII");
-        //         None
-        //     }
-        //     Some(b) => {
-        //         self.pos += 1;
-        //         Some(b)
-        //     }
-        // };
-        //
-        // let mut errored = value.is_none();
-        //
-        // if self.peek() == Some(b'\'') {
-        //     self.pos += 1;
-        // } else {
-        //     let extra_start = self.pos;
-        //     self.consume_while(|b| b != b'\'' && b != b'\n');
-        //     if self.peek() == Some(b'\'') {
-        //         self.pos += 1;
-        //         if !errored {
-        //             self.text_error_with_note(
-        //                 extra_start,
-        //                 "char literal holds more than one byte",
-        //                 "if you are trying to store utf-8 chars, try using a rune instead u'...'",
-        //             );
-        //         }
-        //     } else if !errored {
-        //         return self.unterminated_byte_literal(start);
-        //     }
-        //     errored = true;
-        // }
-        //
-        // match value {
-        //     Some(v) if !errored => self.token(TokenKind::Char(v), start),
-        //     _ => self.token(TokenKind::Error, start),
-        // }
     }
 
     fn unterminated_byte_literal(&mut self, start: usize) -> Token {
@@ -695,6 +667,107 @@ impl Lexer<'_> {
             _ => false,
         }
     }
+
+    fn process_format(&mut self) -> Result<FString, Token> {
+        debug_assert_eq!(self.peek(), Some(b'"'));
+        let start = self.pos;
+        self.pos += 1;
+
+        let mut parts: Vec<FPart> = Vec::new();
+        let mut text_buf: Vec<u8> = Vec::new();
+        let (mut terminated, mut bad) = (false, false);
+
+        while let Some(b) = self.peek() {
+            match b {
+                b'"' => {
+                    self.pos += 1;
+                    terminated = true;
+                    break;
+                }
+                b'\\' => {
+                    self.process_escape(&mut text_buf, &mut bad);
+                }
+                b'{' if self.peek_at(1) == Some(b'{') => {
+                    text_buf.push(b'{');
+                    self.pos += 2;
+                }
+                b'}' if self.peek_at(1) == Some(b'}') => {
+                    text_buf.push(b'}');
+                    self.pos += 2;
+                }
+                b'{' => {
+                    self.flush_format_parts(&mut text_buf, &mut parts);
+                    let open = self.pos;
+                    self.pos += 1;
+                    let li = self.lex_interpolation(open);
+                    match li {
+                        Some(tokens) => parts.push(FPart::Expr(tokens)),
+                        None => bad = true,
+                    }
+                }
+                _ => {
+                    text_buf.push(b);
+                    self.pos += 1;
+                }
+            }
+        }
+
+        if !terminated {
+            self.ctx.diags.push(
+                Diagnostic::error(
+                    self.span(start, self.pos),
+                    ErrorKind::BadTextLiteral,
+                    "unterminated format string",
+                )
+                .with_label(self.span(start, start + 1), "format string starts here"),
+            );
+            return Err(self.token(TokenKind::Error, start));
+        }
+        if bad {
+            return Err(self.token(TokenKind::Error, start));
+        }
+
+        self.flush_format_parts(&mut text_buf, &mut parts);
+        Ok(parts.into())
+    }
+
+    fn flush_format_parts(&mut self, text: &mut Vec<u8>, parts: &mut Vec<FPart>) {
+        if text.is_empty() {
+            return;
+        }
+        let s = String::from_utf8(mem::take(text)).expect("source is utf8");
+        let id = self.ctx.literals.intern_str(&s);
+        parts.push(FPart::Text(id));
+    }
+
+    fn lex_interpolation(&mut self, open: usize) -> Option<Vec<Token>> {
+        let mut tokens = Vec::new();
+        let mut depth = 0;
+        loop {
+            let t = self.next_token();
+            match t.kind {
+                TokenKind::Eof => {
+                    self.text_error(open, "unterminated `{` in format string");
+                    return None;
+                }
+                TokenKind::RBrace if depth == 0 => break,
+                TokenKind::LBrace => depth += 1,
+                TokenKind::RBrace => depth -= 1,
+                _ => {}
+            }
+            tokens.push(t);
+        }
+        if tokens.is_empty() {
+            self.text_error_with_note(
+                open,
+                "empty `{}` in format string, an expression is needed",
+                "if you want an actual brace pair, use `{{}}` instead",
+            );
+            return None;
+        }
+
+        Some(tokens)
+    }
 }
 
 pub struct TokenRenderer<'ctx> {
@@ -721,8 +794,12 @@ impl TokenRenderer<'_> {
             TokenKind::Float(bits, s) => {
                 format!("{:?}{}", f64::from_bits(bits), s.map_or("", Suffix::into))
             }
-            TokenKind::Str(id) | TokenKind::FStr(id) => {
+            TokenKind::Str(id) => {
                 format!("\"{}\"", self.ctx.literals.resolve_str(id).escape_debug())
+            }
+            TokenKind::FStr(_id) => {
+                "format string".to_string() // TODO: Format String
+                // Rendering
             }
             TokenKind::Ident(sym) => self.ctx.interner.resolve(sym).to_string(),
             _ => String::new(),
@@ -737,8 +814,8 @@ impl TokenKind {
             | TokenKind::Float(..)
             | TokenKind::Char(..)
             | TokenKind::Str(..)
-            | TokenKind::FStr(_)
-            | TokenKind::Rune(_) => Color::Yellow,
+            | TokenKind::FStr(..)
+            | TokenKind::Rune(..) => Color::Yellow,
             TokenKind::Ident(..) => Color::Cyan,
             TokenKind::Fn | TokenKind::Include | TokenKind::Intrinsic | TokenKind::Let => {
                 Color::Magenta

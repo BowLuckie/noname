@@ -7,5 +7,5 @@ mod source;
 pub use ctx::Ctx;
 pub use diagnostic::{CompileFailed, Diagnostic, ErrorKind, Severity};
 pub use interner::{Interner, Sym};
-pub use literals::{Literals, StrId};
+pub use literals::{FPart, FStrId, FString, Literals, StrId};
 pub use source::{FileId, SourceFile, SourceMap, Span, Spanned};
